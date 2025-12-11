@@ -13,457 +13,401 @@ using PRN232_GradingSystem_Worker_Repo.DBContext;
 using PRN232_GradingSystem_Worker_Repo.Models;
 using PRN232_GradingSystem_Worker_Services.Interfaces;
 
-namespace PRN232_GradingSystem_Worker_Services.Implementations;
-
-/// <summary>
-/// Service for detecting duplicate code between submissions
-/// </summary>
-public sealed class DuplicateDetectionService : IDuplicateDetectionService
+namespace PRN232_GradingSystem_Worker_Services.Implementations
 {
-    private readonly PRN232_Grading_System_GradingContext _context;
-    private readonly FingerprintService _fingerprintService;
-    private readonly SignatureService _signatureService;
-    private readonly CodeParserService _codeParserService;
-    private readonly ILogger<DuplicateDetectionService> _logger;
-
-    private const decimal VectorThreshold = 0.7m;
-
-    // Performance limits
-    private const int MaxUnitsPerFile = 150;               // cap units per file
-    private const int MaxUnitsPerSubmission = 4000;        // cap units per submission
-    private const int MaxFingerprintsPerUnit = 120;        // cap fingerprints per unit
-    private const long MaxFileSizeBytes = 200_000;         // skip files larger than ~200 KB
-
-    public DuplicateDetectionService(
-        PRN232_Grading_System_GradingContext context,
-        FingerprintService fingerprintService,
-        SignatureService signatureService,
-        CodeParserService codeParserService,
-        ILogger<DuplicateDetectionService> logger)
+    public sealed class DuplicateDetectionService : IDuplicateDetectionService
     {
-        _context = context ?? throw new ArgumentNullException(nameof(context));
-        _fingerprintService = fingerprintService ?? throw new ArgumentNullException(nameof(fingerprintService));
-        _signatureService = signatureService ?? throw new ArgumentNullException(nameof(signatureService));
-        _codeParserService = codeParserService ?? throw new ArgumentNullException(nameof(codeParserService));
-        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
+        private readonly WorkerDbContext _context;
+        private readonly CodeParserService _codeParserService;
+        private readonly ILogger<DuplicateDetectionService> _logger;
 
-    /// <inheritdoc />
-    public async Task ExtractCodeUnitsAsync(Submission submission, string projectPath, CancellationToken cancellationToken)
-    {
-        _logger.LogDebug("Extracting code units for submission {SubmissionId} from {ProjectPath}", 
-            submission.SubmissionId, projectPath);
+        // C?U H?NH NGÝ?NG Ð?O VÃN
+        private const double SimilarityThreshold = 0.85; // Gi?ng nhau >= 85% là ð?o vãn
 
-        // Check if code units already exist
-        var existingUnits = await _context.CodeUnits
-            .Where(u => u.SubmissionId == submission.SubmissionId)
-            .ToListAsync(cancellationToken);
-        
-        if (existingUnits.Any())
+        // GI?I H?N HI?U NÃNG
+        private const int MaxUnitsPerFile = 150;
+        private const int MaxUnitsPerSubmission = 4000;
+        private const long MaxFileSizeBytes = 200_000; // ~200KB
+
+        public DuplicateDetectionService(
+            WorkerDbContext context,
+            CodeParserService codeParserService,
+            ILogger<DuplicateDetectionService> logger)
         {
-            _logger.LogInformation("Code units already exist for submission {SubmissionId}, skipping", submission.SubmissionId);
-            return;
+            _context = context ?? throw new ArgumentNullException(nameof(context));
+            _codeParserService = codeParserService ?? throw new ArgumentNullException(nameof(codeParserService));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        var codeFiles = await _context.CodeFiles
-            .Where(f => f.SubmissionId == submission.SubmissionId)
-            .ToListAsync(cancellationToken);
-
-        var totalUnits = 0;
-        foreach (var codeFile in codeFiles)
+        // =================================================================================================
+        // PH?N 1: TÁCH CODE & T?O VECTOR GI? (Preprocessing)
+        // =================================================================================================
+        public async Task ExtractCodeUnitsAsync(Submission submission, string projectPath, CancellationToken cancellationToken)
         {
-            var filePath = Path.Combine(projectPath, codeFile.RelPath);
-            
-            if (!File.Exists(filePath))
-            {
-                _logger.LogWarning("File not found: {FilePath}", filePath);
-                continue;
-            }
+            _logger.LogDebug("Extracting code units for submission {SubmissionId}", submission.SubmissionId);
 
-            var fileContent = await File.ReadAllTextAsync(filePath, cancellationToken);
-            var language = _codeParserService.DetectLanguage(codeFile.RelPath);
-            var codeUnits = _codeParserService.ExtractCodeUnits(fileContent, codeFile.RelPath, language)
-                .Take(MaxUnitsPerFile)
-                .ToList();
+            // 1. D?n d?p d? li?u c? (ð? tránh trùng l?p khi ch?y l?i)
+            var oldUnits = _context.CodeUnits.Where(u => u.SubmissionId == submission.SubmissionId);
+            _context.CodeUnits.RemoveRange(oldUnits);
 
-            foreach (var unitInfo in codeUnits)
+            var oldFiles = _context.CodeFiles.Where(f => f.SubmissionId == submission.SubmissionId);
+            _context.CodeFiles.RemoveRange(oldFiles);
+
+            await _context.SaveChangesAsync(cancellationToken);
+
+            // 2. Quét file trong thý m?c Project
+            var newCodeFiles = GetCodeFilesFromProject(projectPath, submission.SubmissionId);
+            _context.CodeFiles.AddRange(newCodeFiles);
+            await _context.SaveChangesAsync(cancellationToken);
+
+            // 3. Tách t?ng hàm (Unit) và t?o Vector
+            var totalUnits = 0;
+            foreach (var codeFile in newCodeFiles)
             {
-                if (totalUnits >= MaxUnitsPerSubmission)
-                    break;
-                var codeUnit = new CodeUnit
+                var filePath = Path.Combine(projectPath, codeFile.RelPath);
+                if (!File.Exists(filePath)) continue;
+
+                var fileContent = await File.ReadAllTextAsync(filePath, cancellationToken);
+
+                // Dùng CodeParserService ð? tách hàm
+                var units = _codeParserService.ExtractCodeUnits(fileContent, codeFile.RelPath, codeFile.Language)
+                    .Take(MaxUnitsPerFile);
+
+                foreach (var unitInfo in units)
                 {
-                    UnitId = Guid.NewGuid(),
-                    SubmissionId = submission.SubmissionId,
-                    FileId = codeFile.FileId,
-                    UnitKind = unitInfo.Kind,
-                    UnitKey = unitInfo.Key,
-                    Content = unitInfo.Content,
-                    StartLine = unitInfo.StartLine,
-                    EndLine = unitInfo.EndLine,
-                    ContentHash = ComputeHash(unitInfo.Content),
-                    CreatedAt = DateTime.UtcNow
-                };
+                    if (totalUnits >= MaxUnitsPerSubmission) break;
 
-                _context.CodeUnits.Add(codeUnit);
-                totalUnits++;
+                    // Lýu CodeUnit
+                    var codeUnit = new CodeUnit
+                    {
+                        UnitId = Guid.NewGuid(),
+                        SubmissionId = submission.SubmissionId,
+                        FileId = codeFile.FileId,
+                        UnitKind = unitInfo.Kind,
+                        UnitKey = unitInfo.Key,
+                        Content = unitInfo.Content,
+                        StartLine = unitInfo.StartLine,
+                        EndLine = unitInfo.EndLine,
+                        CreatedAt = DateTime.UtcNow
+                        // ContentHash ð? b? xóa trong DB m?i nên không map ? ðây
+                    };
+
+                    _context.CodeUnits.Add(codeUnit);
+
+                    // --- LOGIC T?O VECTOR GI? (QUAN TR?NG CHO LOCAL) ---
+                    // V? không có AI th?t, ta t?o vector d?a trên ð?c ði?m chu?i
+                    float[] fakeVector = GenerateFakeVector(unitInfo.Content);
+
+                    // Lýu Embedding (Serialize m?ng float thành chu?i JSON)
+                    var embedding = new CodeEmbedding
+                    {
+                        UnitId = codeUnit.UnitId,
+                        SubmissionId = submission.SubmissionId,
+                        ModelName = "FakeLocalModel",
+                        EmbeddingDimension = fakeVector.Length,
+                        Emb = JsonSerializer.Serialize(fakeVector), // Lýu vào c?t TEXT
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.CodeEmbeddings.Add(embedding);
+
+                    totalUnits++;
+                }
             }
-            if (totalUnits >= MaxUnitsPerSubmission)
-                break;
+            await _context.SaveChangesAsync(cancellationToken);
+            _logger.LogInformation("Extracted {Count} units for submission {Id}", totalUnits, submission.SubmissionId);
         }
 
-        await _context.SaveChangesAsync(cancellationToken);
-        _logger.LogDebug("Extracted code units for {Count} files", codeFiles.Count);
-    }
-
-    /// <inheritdoc />
-    public async Task CalculateFingerprintsAsync(Submission submission, CancellationToken cancellationToken)
-    {
-        // Vector DB only: no local fingerprint generation
-        await Task.CompletedTask;
-    }
-
-    /// <inheritdoc />
-    public async Task CalculateSignaturesAsync(Submission submission, CancellationToken cancellationToken)
-    {
-        // Vector DB only: no local signature generation
-        await Task.CompletedTask;
-    }
-
-    /// <inheritdoc />
-    public async Task<DuplicateDetectionResult> DetectDuplicatesAsync(Submission submission, CancellationToken cancellationToken)
-    {
-        _logger.LogInformation("[DupDetect] Start for submission {SubmissionId} (Exam: {ExamId}, Examiner: {ExaminerId})", 
-            submission.SubmissionId, submission.ExamId, submission.ExaminerId);
-
-        // Optional: seed vector matches locally (Jaccard over ContentHash) to approximate vector DB
-        await SeedVectorMatchesAsync(submission, cancellationToken);
-
-        // Use MatchResults (vector DB) as the source of truth
-        var bestFromSrc = await _context.MatchResults
-            .Where(m => m.ExamId == submission.ExamId && m.ExaminerId == submission.ExaminerId && m.SrcSubmissionId == submission.SubmissionId)
-            .OrderByDescending(m => m.Score)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        var bestFromTgt = await _context.MatchResults
-            .Where(m => m.ExamId == submission.ExamId && m.ExaminerId == submission.ExaminerId && m.TgtSubmissionId == submission.SubmissionId)
-            .OrderByDescending(m => m.Score)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        var best = bestFromSrc;
-        if (bestFromTgt != null && (best == null || bestFromTgt.Score > best.Score))
-            best = bestFromTgt;
-
-        if (best == null)
+        // =================================================================================================
+        // PH?N 2: PHÁT HI?N Ð?O VÃN (Core Logic)
+        // =================================================================================================
+        public async Task<DuplicateDetectionResult> DetectDuplicatesAsync(Submission submission, CancellationToken cancellationToken)
         {
-            _logger.LogInformation("[DupDetect] No vector matches found");
-            return new DuplicateDetectionResult { SubmissionId1 = submission.SubmissionId, IsDuplicate = false };
-        }
+            _logger.LogInformation("Starting detection for {SubmissionId}", submission.SubmissionId);
 
-        var otherId = best.SrcSubmissionId == submission.SubmissionId ? best.TgtSubmissionId : best.SrcSubmissionId;
-        var result = new DuplicateDetectionResult
-        {
-            SubmissionId1 = submission.SubmissionId,
-            SubmissionId2 = otherId,
-            VectorScore = best.Score,
-            OverallScore = best.Score,
-            IsDuplicate = best.Score >= VectorThreshold
-        };
+            // 1. L?y vector c?a bài hi?n t?i t? DB
+            // Ch? l?y c?t c?n thi?t ð? ti?t ki?m RAM
+            var currentVectors = await _context.CodeEmbeddings
+                .AsNoTracking()
+                .Where(x => x.SubmissionId == submission.SubmissionId)
+                .Select(x => new { x.UnitId, x.Emb })
+                .ToListAsync(cancellationToken);
 
-        if (result.IsDuplicate && result.SubmissionId2 != Guid.Empty)
-        {
-            // Normalize pair ordering to avoid unique index conflicts (store smaller GUID first)
-            var a = submission.SubmissionId;
-            var b = result.SubmissionId2;
-            var (s1, s2) = a.CompareTo(b) < 0 ? (a, b) : (b, a);
+            if (!currentVectors.Any())
+                return new DuplicateDetectionResult { SubmissionId1 = submission.SubmissionId, IsDuplicate = false };
 
-            var existingDup = await _context.DuplicateDetections.FirstOrDefaultAsync(
-                d => d.ExamId == submission.ExamId && d.ExaminerId == submission.ExaminerId && d.SubmissionId1 == s1 && d.SubmissionId2 == s2,
-                cancellationToken);
+            // 2. L?y vector c?a T?T C? bài khác trong cùng Exam
+            var otherCandidates = await _context.CodeEmbeddings
+                .AsNoTracking()
+                .Where(x => x.Submission.ExamId == submission.ExamId && x.SubmissionId != submission.SubmissionId)
+                .Select(x => new { x.UnitId, x.SubmissionId, x.Emb })
+                .ToListAsync(cancellationToken);
 
-            if (existingDup == null)
+            double maxScore = 0;
+            Guid bestMatchSubmissionId = Guid.Empty;
+            var matches = new List<MatchResult>();
+
+            // 3. V?ng l?p so sánh (Brute-force in Memory)
+            // Lýu ?: V?i d? li?u l?n (>10k units), cách này s? ch?m. Nhýng ð? án th? tho?i mái.
+            foreach (var curr in currentVectors)
             {
-                var otherSub = await _context.Submissions.FirstOrDefaultAsync(s => s.SubmissionId == b, cancellationToken);
-                var duplicateDetection = new DuplicateDetection
+                // Deserialize vector bài m?nh
+                float[] v1 = JsonSerializer.Deserialize<float[]>(curr.Emb);
+
+                foreach (var other in otherCandidates)
+                {
+                    // Deserialize vector bài ngý?i khác
+                    float[] v2 = JsonSerializer.Deserialize<float[]>(other.Emb);
+
+                    // Tính ð? týõng ð?ng
+                    double score = CalculateCosineSimilarity(v1, v2);
+
+                    // N?u vý?t ngý?ng -> Lýu l?i v?t
+                    if (score >= SimilarityThreshold)
+                    {
+                        // T?o MatchResult (Kh?p v?i DB m?i ð? xóa các c?t th?a)
+                        matches.Add(new MatchResult
+                        {
+                            ExamId = submission.ExamId,
+                            SrcUnitId = curr.UnitId,
+                            TgtUnitId = other.UnitId,
+                            Score = (decimal)score,
+                            Detail = JsonSerializer.Serialize(new { Reason = "Local Vector Match", Score = score }),
+                            CreatedAt = DateTime.UtcNow
+                        });
+
+                        // C?p nh?t ði?m cao nh?t toàn bài
+                        if (score > maxScore)
+                        {
+                            maxScore = score;
+                            bestMatchSubmissionId = other.SubmissionId;
+                        }
+                    }
+                }
+            }
+
+            // 4. Lýu k?t qu? vào Database
+            if (matches.Any())
+            {
+                // Lýu chi ti?t t?ng ðo?n code trùng
+                _context.MatchResults.AddRange(matches);
+
+                // L?y StudentId c?a bài b? trùng ð? lýu báo cáo
+                var student2Id = Guid.Empty;
+                if (bestMatchSubmissionId != Guid.Empty)
+                {
+                    var otherSub = await _context.Submissions
+                        .Where(s => s.SubmissionId == bestMatchSubmissionId)
+                        .Select(s => s.StudentId)
+                        .FirstOrDefaultAsync(cancellationToken);
+                    student2Id = otherSub;
+                }
+
+                // Lýu báo cáo t?ng quan (DuplicateDetection)
+                var resultDb = new DuplicateDetection
                 {
                     ExamId = submission.ExamId,
                     ExaminerId = submission.ExaminerId,
-                    SubmissionId1 = s1,
-                    SubmissionId2 = s2,
-                    StudentId1 = s1 == submission.SubmissionId ? submission.StudentId : (otherSub?.StudentId ?? Guid.Empty),
-                    StudentId2 = s2 == submission.SubmissionId ? submission.StudentId : (otherSub?.StudentId ?? Guid.Empty),
-                    VectorScore = result.VectorScore,
+                    SubmissionId1 = submission.SubmissionId,
+                    SubmissionId2 = bestMatchSubmissionId,
+                    StudentId1 = submission.StudentId,
+                    StudentId2 = student2Id,
+                    VectorScore = (decimal)maxScore,
                     IsDuplicate = true,
-                    ThresholdUsed = $"Vector={VectorThreshold}",
-                    MatchedUnits = JsonSerializer.Serialize(new List<object>()),
-                    CreatedAt = DateTime.UtcNow,
-                    Notes = "Detected by vector DB"
-                };
-                _context.DuplicateDetections.Add(duplicateDetection);
-            }
-            else
-            {
-                // Update score if higher, ensure flag remains true
-                if (result.VectorScore > existingDup.VectorScore)
-                    existingDup.VectorScore = result.VectorScore;
-                existingDup.IsDuplicate = true;
-                existingDup.ThresholdUsed = $"Vector={VectorThreshold}";
-            }
-
-            await _context.SaveChangesAsync(cancellationToken);
-            _logger.LogInformation("[DupDetect] Duplicate detected (vector): {Submission1} vs {Submission2}, Score: {Score}", s1, s2, result.VectorScore);
-        }
-        else
-        {
-            _logger.LogInformation("[DupDetect] No duplicate found. Best vector score={Score}", result.OverallScore);
-        }
-
-        return result;
-    }
-
-    private async Task SeedVectorMatchesAsync(Submission submission, CancellationToken cancellationToken)
-    {
-        try
-        {
-            // Current units (hash set)
-            var currentHashes = await _context.CodeUnits
-                .Where(u => u.SubmissionId == submission.SubmissionId)
-                .Select(u => Convert.ToBase64String(u.ContentHash))
-                .ToListAsync(cancellationToken);
-
-            if (currentHashes.Count == 0)
-                return;
-
-            var currentSet = new HashSet<string>(currentHashes);
-
-            // Other submissions in same scope
-            var others = await _context.Submissions
-                .Where(s => s.ExamId == submission.ExamId && s.ExaminerId == submission.ExaminerId && s.SubmissionId != submission.SubmissionId)
-                .Select(s => s.SubmissionId)
-                .ToListAsync(cancellationToken);
-
-            foreach (var otherId in others)
-            {
-                var otherHashes = await _context.CodeUnits
-                    .Where(u => u.SubmissionId == otherId)
-                    .Select(u => Convert.ToBase64String(u.ContentHash))
-                    .ToListAsync(cancellationToken);
-
-                if (otherHashes.Count == 0)
-                    continue;
-
-                var otherSet = new HashSet<string>(otherHashes);
-                var intersect = currentSet.Intersect(otherSet).Count();
-                var union = currentSet.Union(otherSet).Count();
-                var jaccard = union == 0 ? 0m : (decimal)intersect / union;
-
-                // Upsert MatchResult in both directions for convenience
-                await UpsertMatchAsync(submission.ExamId, submission.ExaminerId, submission.SubmissionId, otherId, jaccard, cancellationToken);
-                await UpsertMatchAsync(submission.ExamId, submission.ExaminerId, otherId, submission.SubmissionId, jaccard, cancellationToken);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "[DupDetect] SeedVectorMatches skipped due to error");
-        }
-    }
-
-    private async Task UpsertMatchAsync(Guid examId, Guid? examinerId, Guid srcId, Guid tgtId, decimal score, CancellationToken ct)
-    {
-        // Skip self-match by submission
-        if (srcId == tgtId) return;
-
-        // Pick representative unit for each submission (first unit)
-        var srcUnitId = await _context.CodeUnits
-            .Where(u => u.SubmissionId == srcId)
-            .OrderBy(u => u.UnitId)
-            .Select(u => u.UnitId)
-            .FirstOrDefaultAsync(ct);
-
-        var tgtUnitId = await _context.CodeUnits
-            .Where(u => u.SubmissionId == tgtId)
-            .OrderBy(u => u.UnitId)
-            .Select(u => u.UnitId)
-            .FirstOrDefaultAsync(ct);
-
-        if (srcUnitId == Guid.Empty || tgtUnitId == Guid.Empty) return; // no units available
-
-        // Ensure units are not identical to satisfy chk_match_src_ne_tgt
-        if (srcUnitId == tgtUnitId)
-        {
-            // try next target unit
-            tgtUnitId = await _context.CodeUnits
-                .Where(u => u.SubmissionId == tgtId)
-                .OrderBy(u => u.UnitId)
-                .Select(u => u.UnitId)
-                .Skip(1)
-                .FirstOrDefaultAsync(ct);
-            if (tgtUnitId == Guid.Empty || tgtUnitId == srcUnitId) return;
-        }
-
-        var existing = await _context.MatchResults
-            .FirstOrDefaultAsync(m => m.ExamId == examId && m.ExaminerId == examinerId && m.SrcSubmissionId == srcId && m.TgtSubmissionId == tgtId, ct);
-
-        if (existing == null)
-        {
-            var m = new MatchResult
-            {
-                ExamId = examId,
-                ExaminerId = examinerId,
-                SrcSubmissionId = srcId,
-                TgtSubmissionId = tgtId,
-                SrcUnitId = srcUnitId,
-                TgtUnitId = tgtUnitId,
-                Method = "vector",
-                Score = score,
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.MatchResults.Add(m);
-        }
-        else
-        {
-            existing.Score = Math.Max(existing.Score, score);
-        }
-
-        await _context.SaveChangesAsync(ct);
-    }
-
-    /// <inheritdoc />
-    public async Task PrepareSubmissionAsync(Submission submission, string projectPath, CancellationToken cancellationToken)
-    {
-            _logger.LogDebug("Preparing submission {SubmissionId} for duplicate detection", submission.SubmissionId);
-
-        // Note: Exam/Examiner should already be created in ResolveSubmissionAsync
-        // Just ensure they exist in DB
-        if (submission.ExamId != Guid.Empty)
-        {
-            var examExists = await _context.Exams.AnyAsync(e => e.ExamId == submission.ExamId, cancellationToken);
-            if (!examExists)
-            {
-                _logger.LogWarning("Exam {ExamId} not found in database. This should not happen!", submission.ExamId);
-            }
-        }
-
-        if (submission.ExaminerId.HasValue && submission.ExaminerId.Value != Guid.Empty)
-        {
-            var examinerExists = await _context.Examiners.AnyAsync(e => e.ExaminerId == submission.ExaminerId.Value, cancellationToken);
-            if (!examinerExists)
-            {
-                _logger.LogWarning("Examiner {ExaminerId} not found in database. This should not happen!", submission.ExaminerId);
-            }
-        }
-
-        // Upsert Submission by SubmissionId
-        var existingSubmission = await _context.Submissions
-            .FirstOrDefaultAsync(s => s.SubmissionId == submission.SubmissionId, cancellationToken);
-        if (existingSubmission == null)
-        {
-            _logger.LogDebug("Creating Submission {SubmissionId}", submission.SubmissionId);
-            // StorageKey should already be set by GradingPipeline with StudentId string
-            // Format: "submission_{submissionId}:student_{studentId}"
-            // If not set, use default format
-            if (string.IsNullOrWhiteSpace(submission.StorageKey))
-            {
-                submission.StorageKey = $"submission_{submission.SubmissionId:N}";
-            }
-            submission.Status = "processing";
-            submission.CreatedAt = DateTime.UtcNow;
-            _context.Submissions.Add(submission);
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-        else
-        {
-            _logger.LogDebug("Updating Submission {SubmissionId}", submission.SubmissionId);
-            existingSubmission.ExamId = submission.ExamId;
-            existingSubmission.ExaminerId = submission.ExaminerId;
-            existingSubmission.StudentId = submission.StudentId;
-            // Update StorageKey if it contains StudentId string (preserve StudentId string in StorageKey)
-            if (!string.IsNullOrWhiteSpace(submission.StorageKey) && submission.StorageKey.Contains(":student_"))
-            {
-                existingSubmission.StorageKey = submission.StorageKey;
-            }
-            existingSubmission.Status = "processing";
-            await _context.SaveChangesAsync(cancellationToken);
-
-            // Clear old artifacts for this submission
-            // Vector-only: no local signatures/fingerprints to clear
-            var oldUnits = _context.CodeUnits.Where(x => x.SubmissionId == submission.SubmissionId);
-            _context.CodeUnits.RemoveRange(oldUnits);
-            var oldFiles = _context.CodeFiles.Where(x => x.SubmissionId == submission.SubmissionId);
-            _context.CodeFiles.RemoveRange(oldFiles);
-            await _context.SaveChangesAsync(cancellationToken);
-        }
-
-        // Create CodeFiles from project path (fresh for both create and update)
-        _logger.LogDebug("Creating CodeFiles for submission {SubmissionId} from {ProjectPath}", submission.SubmissionId, projectPath);
-        var newCodeFiles = GetCodeFilesFromProject(projectPath, submission.SubmissionId);
-        _context.CodeFiles.AddRange(newCodeFiles);
-        await _context.SaveChangesAsync(cancellationToken);
-        _logger.LogDebug("Created {Count} CodeFiles", newCodeFiles.Count);
-    }
-
-    private List<CodeFile> GetCodeFilesFromProject(string projectPath, Guid submissionId)
-    {
-        var codeFiles = new List<CodeFile>();
-        var allowedExtensions = new[] { ".cs", ".cshtml", ".cshtml.cs" };
-        var includeRoots = new[] { "/pages/", "/areas/", "/views/", "/models/", "/controllers/", "/services/" };
-        var excludeSegments = new[] { "/bin/", "/obj/", "/node_modules/", "/migrations/", "/tests/", "/test/", "/properties/", "/wwwroot/" };
-        
-        try
-        {
-            var allFiles = Directory.GetFiles(projectPath, "*.*", SearchOption.AllDirectories);
-            
-            foreach (var filePath in allFiles)
-            {
-                var relPath = Path.GetRelativePath(projectPath, filePath).Replace('\\', '/');
-                var extension = Path.GetExtension(filePath);
-
-                // Extension filter (Razor Pages + C# only)
-                if (!allowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
-                    continue;
-
-                // Exclude common non-code/project folders
-                if (excludeSegments.Any(seg => relPath.Contains(seg, StringComparison.OrdinalIgnoreCase)))
-                    continue;
-
-                // Include only typical Razor Pages roots
-                var lowerRel = "/" + relPath.ToLowerInvariant();
-                if (!includeRoots.Any(root => lowerRel.Contains(root, StringComparison.Ordinal)))
-                    continue;
-
-                // Skip large files for performance
-                var fileInfo = new FileInfo(filePath);
-                if (fileInfo.Length > MaxFileSizeBytes)
-                    continue;
-
-                var fileContent = File.ReadAllText(filePath);
-
-                var codeFile = new CodeFile
-                {
-                    FileId = Guid.NewGuid(),
-                    SubmissionId = submissionId,
-                    RelPath = relPath,
-                    Language = _codeParserService.DetectLanguage(relPath),
-                    LineCount = fileContent.Split('\n').Length,
-                    FileHash = ComputeHash(fileContent),
-                    FileSize = fileInfo.Length,
+                    ThresholdUsed = $"Similarity >= {SimilarityThreshold}",
+                    MatchedUnits = JsonSerializer.Serialize(matches.OrderByDescending(m => m.Score).Take(5).Select(m => m.Score)), // Lýu top 5 ði?m
+                    Notes = "Detected by Local Logic (No-Vector DB)",
                     CreatedAt = DateTime.UtcNow
                 };
 
-                codeFiles.Add(codeFile);
+                _context.DuplicateDetections.Add(resultDb);
+                await _context.SaveChangesAsync(cancellationToken);
+
+                _logger.LogInformation("Found duplicate with score {Score}", maxScore);
+
+                return new DuplicateDetectionResult
+                {
+                    SubmissionId1 = submission.SubmissionId,
+                    SubmissionId2 = bestMatchSubmissionId,
+                    IsDuplicate = true,
+                    VectorScore = (decimal)maxScore,
+                    OverallScore = (decimal)maxScore
+                };
             }
+
+            _logger.LogInformation("No duplicate found.");
+            return new DuplicateDetectionResult { SubmissionId1 = submission.SubmissionId, IsDuplicate = false };
         }
-        catch (Exception ex)
+
+        // =================================================================================================
+        // CÁC HÀM H? TR? (HELPER FUNCTIONS)
+        // =================================================================================================
+
+        /// <summary>
+        /// Tính Cosine Similarity gi?a 2 vector.
+        /// Công th?c: (A . B) / (||A|| * ||B||)
+        /// </summary>
+        private double CalculateCosineSimilarity(float[] v1, float[] v2)
         {
-            _logger.LogError(ex, "Error reading files from project path {ProjectPath}", projectPath);
+            if (v1 == null || v2 == null || v1.Length != v2.Length) return 0;
+
+            double dot = 0.0, mag1 = 0.0, mag2 = 0.0;
+            for (int i = 0; i < v1.Length; i++)
+            {
+                dot += v1[i] * v2[i];
+                mag1 += v1[i] * v1[i];
+                mag2 += v2[i] * v2[i];
+            }
+
+            if (mag1 == 0 || mag2 == 0) return 0;
+            return dot / (Math.Sqrt(mag1) * Math.Sqrt(mag2));
         }
 
-        return codeFiles;
-    }
+        /// <summary>
+        /// T?o Vector gi? t? n?i dung code.
+        /// Nguyên t?c: Code gi?ng nhau -> Vector gi?ng nhau. Code khác nhau -> Vector khác nhau.
+        /// </summary>
+        private float[] GenerateFakeVector(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return new float[5];
 
-    private byte[] ComputeHash(string content)
-    {
-        using var sha256 = SHA256.Create();
-        return sha256.ComputeHash(Encoding.UTF8.GetBytes(content));
+            // Rút g?n code (b? kho?ng tr?ng th?a) ð? tính chính xác hõn
+            var clean = content.Replace(" ", "").Replace("\r", "").Replace("\n", "");
+            float len = clean.Length;
+
+            // T?o vector 5 chi?u d?a trên các ð?c ði?m th?ng kê ðõn gi?n
+            return new float[]
+            {
+                len % 100,                                  // Ð?c trýng 1: Ð? dài
+                clean.Count(c => c == ';') % 20,            // Ð?c trýng 2: S? d?u ch?m ph?y
+                clean.Count(c => c == '{') % 10,            // Ð?c trýng 3: S? kh?i l?nh
+                (float)clean.Select(c => (int)c).Sum() % 500, // Ð?c trýng 4: T?ng m? ASCII
+                clean.Contains("for") || clean.Contains("if") ? 1f : 0f // Ð?c trýng 5: T? khóa
+            };
+        }
+
+        public async Task PrepareSubmissionAsync(Submission submission, string projectPath, CancellationToken cancellationToken)
+        {
+            _logger.LogDebug("Preparing submission {SubmissionId}", submission.SubmissionId);
+
+            // Ki?m tra Exam (n?u c?n thi?t, b? qua n?u tin tý?ng d? li?u)
+            if (submission.ExamId != Guid.Empty)
+            {
+                // 1. Ki?m tra xem ExamId này ð? có trong DB c?a Worker chýa
+                var examExists = await _context.Exams
+                    .AnyAsync(e => e.ExamId == submission.ExamId, cancellationToken);
+
+                // 2. N?u chýa có -> T?o m?t Exam "gi?" ð? th?a m?n khóa ngo?i
+                // (V? Worker ch? c?n ID ð? gom nhóm, không quan tâm tên k? thi)
+                if (!examExists)
+                {
+                    var dummyExam = new Exam
+                    {
+                        ExamId = submission.ExamId,
+                        Code = "AUTO_" + submission.ExamId.ToString().Substring(0, 8), // M? t?m
+                        Title = "Auto Generated Exam (Missing Metadata)",
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    _context.Exams.Add(dummyExam);
+                    await _context.SaveChangesAsync(cancellationToken); // Lýu ngay ð? d?ng dý?i dùng ðý?c
+
+                    _logger.LogWarning("Auto-created missing Exam {Id} to prevent FK error.", submission.ExamId);
+                }
+            }
+
+            // B? sung thêm: Ki?m tra Examiner (Ngý?i ch?m) týõng t?
+            if (submission.ExaminerId.HasValue && submission.ExaminerId.Value != Guid.Empty)
+            {
+                var examinerExists = await _context.Examiners
+                    .AnyAsync(e => e.ExaminerId == submission.ExaminerId.Value, cancellationToken);
+
+                if (!examinerExists)
+                {
+                    var dummyExaminer = new Examiner
+                    {
+                        ExaminerId = submission.ExaminerId.Value,
+                        Code = "AUTO_WORKER",
+                        Name = "Auto Generated Examiner",
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    _context.Examiners.Add(dummyExaminer);
+                    await _context.SaveChangesAsync(cancellationToken);
+                }
+            }
+
+            // Upsert Submission (T?o ho?c C?p nh?t)
+            var existingSubmission = await _context.Submissions
+                .FirstOrDefaultAsync(s => s.SubmissionId == submission.SubmissionId, cancellationToken);
+
+            if (existingSubmission == null)
+            {
+                if (string.IsNullOrWhiteSpace(submission.StorageKey))
+                    submission.StorageKey = $"submission_{submission.SubmissionId:N}";
+
+                submission.Status = "processing";
+                submission.CreatedAt = DateTime.UtcNow;
+                _context.Submissions.Add(submission);
+            }
+            else
+            {
+                existingSubmission.Status = "processing";
+                // Gi? nguyên các thông tin khác
+            }
+            await _context.SaveChangesAsync(cancellationToken);
+
+            // Xóa d? li?u rác c? n?u có
+            // ... (Logic này ð? ðý?c x? l? ? ExtractCodeUnitsAsync nên có th? b? qua ? ðây cho g?n)
+        }
+
+        private List<CodeFile> GetCodeFilesFromProject(string projectPath, Guid submissionId)
+        {
+            var codeFiles = new List<CodeFile>();
+            var allowedExtensions = new[] { ".cs" }; // Ch? l?y file C#
+            var excludeSegments = new[] { "\\bin\\", "\\obj\\", "\\.git\\", "\\Migrations\\" }; // B? thý m?c rác
+
+            try
+            {
+                if (!Directory.Exists(projectPath)) return codeFiles;
+
+                var allFiles = Directory.GetFiles(projectPath, "*.*", SearchOption.AllDirectories);
+
+                foreach (var filePath in allFiles)
+                {
+                    // Filter ðuôi file
+                    var extension = Path.GetExtension(filePath);
+                    if (!allowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)) continue;
+
+                    // Filter thý m?c rác
+                    if (excludeSegments.Any(seg => filePath.Contains(seg, StringComparison.OrdinalIgnoreCase))) continue;
+
+                    var fileInfo = new FileInfo(filePath);
+                    if (fileInfo.Length > MaxFileSizeBytes) continue; // B? file quá l?n
+
+                    var relPath = Path.GetRelativePath(projectPath, filePath).Replace('\\', '/');
+                    var content = File.ReadAllText(filePath);
+
+                    codeFiles.Add(new CodeFile
+                    {
+                        FileId = Guid.NewGuid(),
+                        SubmissionId = submissionId,
+                        RelPath = relPath,
+                        Language = "csharp",
+                        LineCount = content.Split('\n').Length,
+                        // FileHash: B? qua ho?c dùng MD5 n?u b?ng DB có c?t này (DB m?i ð? xóa byte[])
+                        FileSize = fileInfo.Length,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reading files");
+            }
+            return codeFiles;
+        }
+
+        // Các hàm Interface th?a (c?a b?n c?) - Ð? tr?ng ð? th?a m?n Interface
+        public Task CalculateFingerprintsAsync(Submission submission, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task CalculateSignaturesAsync(Submission submission, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }
-

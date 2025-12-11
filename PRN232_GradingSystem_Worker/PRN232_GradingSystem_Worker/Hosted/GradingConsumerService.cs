@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -40,31 +40,115 @@ namespace PRN232_GradingSystem_Worker.Hosted
             _processTracker = processTracker;
         }
 
+        //protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        //{
+        //    while (!stoppingToken.IsCancellationRequested)
+        //    {
+        //        try
+        //        {
+        //            var factory = new ConnectionFactory
+        //            {
+        //                HostName = _rabbitMQConfig.Host,
+        //                Port = _rabbitMQConfig.Port,
+        //                UserName = _rabbitMQConfig.User,
+        //                Password = _rabbitMQConfig.Password,
+        //                VirtualHost = _rabbitMQConfig.VirtualHost,
+        //                DispatchConsumersAsync = true,
+        //                Ssl = { Enabled = _rabbitMQConfig.UseTls }
+        //            };
+
+        //            _logger.LogInformation("Attempting to connect to RabbitMQ at {Host}:{Port}", _rabbitMQConfig.Host, _rabbitMQConfig.Port);
+        //            _connection = factory.CreateConnection();
+        //            _logger.LogInformation("Connected to RabbitMQ successfully");
+
+        //            _channel = _connection.CreateModel();
+        //            _channel.BasicQos(0, (ushort)_rabbitMQConfig.Prefetch, false);
+
+        //            _channel.QueueDeclare(_rabbitMQConfig.QueueName, durable: true, exclusive: false, autoDelete: false);
+
+        //            var consumer = new AsyncEventingBasicConsumer(_channel);
+        //            consumer.Received += async (ch, ea) =>
+        //            {
+        //                var body = ea.Body.ToArray();
+        //                var message = Encoding.UTF8.GetString(body);
+        //                try
+        //                {
+        //                    var job = JsonSerializer.Deserialize<GradingJob>(message, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        //                    if (job == null || string.IsNullOrWhiteSpace(job.SubmissionId))
+        //                    {
+        //                        _logger.LogWarning("Invalid job payload: {Message}", message);
+        //                        _channel!.BasicAck(ea.DeliveryTag, false);
+        //                        return;
+        //                    }
+
+        //                    _logger.LogInformation("Processing submission {SubmissionId}", job.SubmissionId);
+
+        //                    var result = await _gradingPipeline.ProcessSubmissionAsync(
+        //                        job.SubmissionId,
+        //                        job.FileUrl ?? string.Empty,
+        //                        job.ExamCode,
+        //                        job.StudentId,
+        //                        job.ExaminerCode,
+        //                        stoppingToken);
+
+        //                    // Call Main Service callback API to update result with grade details
+        //                    await SendCallbackAsync(job.SubmissionId, job.ExaminerCode ?? string.Empty, result, stoppingToken);
+
+        //                    _channel!.BasicAck(ea.DeliveryTag, false);
+        //                }
+        //                catch (Exception ex)
+        //                {
+        //                    _logger.LogError(ex, "Error processing job: {Payload}", message);
+        //                    _channel!.BasicNack(ea.DeliveryTag, false, requeue: false);
+        //                }
+        //            };
+
+        //            _channel.BasicConsume(queue: _rabbitMQConfig.QueueName, autoAck: false, consumer: consumer);
+        //            _logger.LogInformation("Started consuming messages from queue: {Queue}", _rabbitMQConfig.QueueName);
+
+        //            // Keep the connection alive until cancellation or error
+        //            await Task.Delay(Timeout.Infinite, stoppingToken);
+        //        }
+        //        catch (Exception ex)
+        //        {
+        //            _logger.LogError(ex, "RabbitMQ connection error. Will retry in 30 seconds...");
+        //            CleanupConnection();
+        //            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+        //        }
+        //    }
+        //}
+
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
                 {
+                    // --- SỬA ĐOẠN NÀY ---
+                    // Ghi cứng thông tin Admin bạn vừa tạo để đảm bảo kết nối thành công
                     var factory = new ConnectionFactory
                     {
-                        HostName = _rabbitMQConfig.Host,
-                        Port = _rabbitMQConfig.Port,
-                        UserName = _rabbitMQConfig.User,
-                        Password = _rabbitMQConfig.Password,
-                        VirtualHost = _rabbitMQConfig.VirtualHost,
-                        DispatchConsumersAsync = true,
-                        Ssl = { Enabled = _rabbitMQConfig.UseTls }
+                        HostName = "localhost",
+                        Port = 5672,
+                        UserName = "admin",      // User bạn đã tạo trên Web
+                        Password = "admin123",   // Pass bạn đã tạo trên Web
+                        VirtualHost = "/",       // Quan trọng: Dấu gạch chéo
+                        DispatchConsumersAsync = true
                     };
+                    // --------------------
 
-                    _logger.LogInformation("Attempting to connect to RabbitMQ at {Host}:{Port}", _rabbitMQConfig.Host, _rabbitMQConfig.Port);
+                    _logger.LogInformation("Attempting to connect to RabbitMQ at {Host}:{Port}", factory.HostName, factory.Port);
                     _connection = factory.CreateConnection();
                     _logger.LogInformation("Connected to RabbitMQ successfully");
-                    
-                    _channel = _connection.CreateModel();
-                    _channel.BasicQos(0, (ushort)_rabbitMQConfig.Prefetch, false);
 
-                    _channel.QueueDeclare(_rabbitMQConfig.QueueName, durable: true, exclusive: false, autoDelete: false);
+                    _channel = _connection.CreateModel();
+
+                    // Lưu ý: Ép kiểu int sang ushort cho PrefetchCount
+                    _channel.BasicQos(0, (ushort)1, false);
+
+                    // Khai báo hàng đợi (đảm bảo tên queue đúng)
+                    var queueName = "grading.upload";
+                    _channel.QueueDeclare(queueName, durable: true, exclusive: false, autoDelete: false);
 
                     var consumer = new AsyncEventingBasicConsumer(_channel);
                     consumer.Received += async (ch, ea) =>
@@ -73,7 +157,9 @@ namespace PRN232_GradingSystem_Worker.Hosted
                         var message = Encoding.UTF8.GetString(body);
                         try
                         {
+                            // ... (Giữ nguyên logic xử lý tin nhắn bên dưới) ...
                             var job = JsonSerializer.Deserialize<GradingJob>(message, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
                             if (job == null || string.IsNullOrWhiteSpace(job.SubmissionId))
                             {
                                 _logger.LogWarning("Invalid job payload: {Message}", message);
@@ -82,7 +168,7 @@ namespace PRN232_GradingSystem_Worker.Hosted
                             }
 
                             _logger.LogInformation("Processing submission {SubmissionId}", job.SubmissionId);
-                            
+
                             var result = await _gradingPipeline.ProcessSubmissionAsync(
                                 job.SubmissionId,
                                 job.FileUrl ?? string.Empty,
@@ -91,7 +177,6 @@ namespace PRN232_GradingSystem_Worker.Hosted
                                 job.ExaminerCode,
                                 stoppingToken);
 
-                            // Call Main Service callback API to update result with grade details
                             await SendCallbackAsync(job.SubmissionId, job.ExaminerCode ?? string.Empty, result, stoppingToken);
 
                             _channel!.BasicAck(ea.DeliveryTag, false);
@@ -103,10 +188,9 @@ namespace PRN232_GradingSystem_Worker.Hosted
                         }
                     };
 
-                    _channel.BasicConsume(queue: _rabbitMQConfig.QueueName, autoAck: false, consumer: consumer);
-                    _logger.LogInformation("Started consuming messages from queue: {Queue}", _rabbitMQConfig.QueueName);
+                    _channel.BasicConsume(queue: queueName, autoAck: false, consumer: consumer);
+                    _logger.LogInformation("Started consuming messages from queue: {Queue}", queueName);
 
-                    // Keep the connection alive until cancellation or error
                     await Task.Delay(Timeout.Infinite, stoppingToken);
                 }
                 catch (Exception ex)
@@ -117,7 +201,7 @@ namespace PRN232_GradingSystem_Worker.Hosted
                 }
             }
         }
-        
+
         private async Task SendCallbackAsync(string submissionId, string examinerCode, GradingResult result, CancellationToken cancellationToken)
         {
             try
