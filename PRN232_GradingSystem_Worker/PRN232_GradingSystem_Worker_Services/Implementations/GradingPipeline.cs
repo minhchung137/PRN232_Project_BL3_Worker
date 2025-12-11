@@ -139,7 +139,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             {
                 using var scope = _serviceScopeFactory.CreateScope();
                 var duplicateDetectionService = scope.ServiceProvider.GetRequiredService<IDuplicateDetectionService>();
-                var context = scope.ServiceProvider.GetRequiredService<PRN232_Grading_System_GradingContext>();
+                var context = scope.ServiceProvider.GetRequiredService<WorkerDbContext>();
                 
                 submission = await ResolveSubmissionAsync(context, submissionId, examCode, studentId, examinerCode, cancellationToken);
             }
@@ -406,7 +406,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                             try
                             {
                                 using var dbScope = _serviceScopeFactory.CreateScope();
-                                var dbContext = dbScope.ServiceProvider.GetRequiredService<PRN232_Grading_System_GradingContext>();
+                                var dbContext = dbScope.ServiceProvider.GetRequiredService<WorkerDbContext>();
                                 var duplicateSub = await dbContext.Submissions
                                     .FirstOrDefaultAsync(s => s.SubmissionId == duplicateResult.SubmissionId2, cancellationToken);
                                 
@@ -1393,7 +1393,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
         }
 
         private async Task<Submission> ResolveSubmissionAsync(
-            PRN232_Grading_System_GradingContext context,
+            WorkerDbContext context,
             string submissionIdStr,
             string? examCode,
             string? studentId,

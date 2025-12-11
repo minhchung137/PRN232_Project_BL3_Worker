@@ -24,7 +24,7 @@ builder.Services.AddProcessTrackerService();
 builder.Services.AddGradingPipeline(builder.Configuration);
 
 // Add DbContext
-builder.Services.AddDbContext<PRN232_Grading_System_GradingContext>(options =>
+builder.Services.AddDbContext<WorkerDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("PostgreSQLConnection")));
 
 // Register duplicate detection services
