@@ -168,13 +168,13 @@ public static class ServiceCollectionExtensions
         // Register main service
         services.AddScoped<IDuplicateDetectionService>(sp =>
         {
-            var context = sp.GetRequiredService<PRN232_Grading_System_GradingContext>();
+            var context = sp.GetRequiredService<WorkerDbContext>();
             var fingerprintService = sp.GetRequiredService<FingerprintService>();
             var signatureService = sp.GetRequiredService<SignatureService>();
             var codeParserService = sp.GetRequiredService<CodeParserService>();
             var logger = sp.GetRequiredService<ILogger<DuplicateDetectionService>>();
-            
-            return new DuplicateDetectionService(context, fingerprintService, signatureService, codeParserService, logger);
+
+            return new DuplicateDetectionService(context, codeParserService, logger);
         });
 
         return services;
