@@ -1,0 +1,94 @@
+# ---- OS / tooling ----
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.temp
+*.swp
+
+# ---- IDEs ----
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# ---- .NET build artifacts ----
+**/bin/
+**/obj/
+**/out/
+**/publish/
+
+# ---- Test / Coverage ----
+TestResults/
+coverage/
+*.coverage*
+*.trx
+
+# ---- Node/Front-end (if any) ----
+node_modules/
+**/.cache/
+
+# ---- Playwright ----
+.playwright/
+playwright/.cache/
+playwright-videos/
+**/playwright-videos/
+
+# ---- Secrets / Environment ----
+.env
+.env.*
+
+# App settings containing secrets (keep samples instead)
+# Development and Production appsettings may contain connection strings and API keys
+**/appsettings.Development.json
+**/appsettings.Production.json
+**/appsettings.*.json
+!**/appsettings.json
+!**/appsettings.Example.json
+!**/appsettings.Sample.json
+
+# ---- Database files ----
+*.mdf
+*.ldf
+*.ndf
+*.sqlite
+*.db
+
+# ---- Publish profiles ----
+**/Properties/PublishProfiles/*.pubxml
+**/Properties/PublishProfiles/*.pubxml.user
+
+# ---- Rider / Resharper ----
+_ReSharper*/
+*.DotSettings.user
+
+# ---- Temporary grading working dir (local only) ----
+# Note: actual temp path is OS-specific; this prevents accidental adds if copied in
+GradingWorker/
+**/GradingWorker/
+
+# Temporary submission files (ZIP downloads and extracted projects)
+# Note: These are typically in GradingWorker/ directory, but also ignore if copied elsewhere
+*_old_*/
+**/*_old_*/
+# ZIP files with GUID-like names (submission IDs)
+# Note: This is a simple pattern - actual GUIDs are 36 chars with dashes
+# More specific patterns would require regex which gitignore doesn't support
+
+# ---- OS trash ----
+$RECYCLE.BIN/
+**/.Trash-*/
+
+# ---- Grading process temporary files ----
+# Log files from grading process
+grading-*.log
+**/grading-*.log
+
+# Temporary extracted archives
+*.rar
+*.7z
+!**/lib/**/*.7z
+!**/lib/**/*.rar

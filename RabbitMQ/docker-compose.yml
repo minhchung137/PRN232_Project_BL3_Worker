@@ -1,0 +1,37 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: rabbitmq_local
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: grading
+      RABBITMQ_DEFAULT_PASS: grading123
+      RABBITMQ_DEFAULT_VHOST: /dev
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: pgvector_local
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vectordb
+    ports:
+      - "5433:5432"     # host:container
+    volumes:
+      - pgvector-data:/var/lib/postgresql/data
+      - ./db-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vectordb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq-data:
+  pgvector-data:
