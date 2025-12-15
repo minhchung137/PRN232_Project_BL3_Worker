@@ -26,19 +26,22 @@ namespace PRN232_GradingSystem_Worker.Hosted
         private readonly ProcessTrackerService _processTracker;
         private IConnection? _connection;
         private IModel? _channel;
+        
+        private readonly RubricGradeDetailBuilder _rubricBuilder;
 
         public GradingConsumerService(
             ILogger<GradingConsumerService> logger, 
             RabbitMQConfiguration rabbitMQConfig,
             IGradingPipeline gradingPipeline,
             ICallbackService callbackService,
-            ProcessTrackerService processTracker)
+            ProcessTrackerService processTracker, RubricGradeDetailBuilder rubricBuilder)
         {
             _logger = logger;
             _rabbitMQConfig = rabbitMQConfig;
             _gradingPipeline = gradingPipeline;
             _callbackService = callbackService;
             _processTracker = processTracker;
+            _rubricBuilder = rubricBuilder;
         }
 
         //protected override async Task ExecuteAsync(CancellationToken stoppingToken)

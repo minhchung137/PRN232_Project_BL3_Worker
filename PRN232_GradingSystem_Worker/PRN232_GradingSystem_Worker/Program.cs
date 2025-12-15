@@ -25,6 +25,7 @@ builder.Services.AddRubricApiClient(builder.Configuration);
 builder.Services.AddUiTestingServices(builder.Configuration);
 builder.Services.AddProcessTrackerService();
 builder.Services.AddGradingPipeline(builder.Configuration);
+builder.Services.AddRubricServices();
 
 // Add DbContext
 builder.Services.AddDbContext<WorkerDbContext>(options =>

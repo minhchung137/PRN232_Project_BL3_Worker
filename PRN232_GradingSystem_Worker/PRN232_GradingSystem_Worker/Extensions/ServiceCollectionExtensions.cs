@@ -6,6 +6,7 @@ using PRN232_GradingSystem_Worker_Services.Interfaces;
 using Microsoft.Extensions.Logging;
 using PRN232_GradingSystem_Worker_Repo.DBContext;
 using Microsoft.Playwright;
+using PRN232_GradingSystem_Worker_Services.Callbacks;
 using PRN232_GradingSystem_Worker_Services.Settings;
 
 namespace PRN232_GradingSystem_Worker.Extensions;
@@ -215,6 +216,12 @@ public static class ServiceCollectionExtensions
         return services;
     }
     
+    public static IServiceCollection AddRubricServices(
+        this IServiceCollection services)
+    {
+        services.AddSingleton<RubricGradeDetailBuilder>();
+        return services;
+    }
     
 }
 
