@@ -19,6 +19,9 @@ builder.Services.AddCallbackApiConfiguration(builder.Configuration);
 builder.Services.AddDatabaseServices(builder.Configuration);
 builder.Services.AddFileDownloadServices();
 builder.Services.AddCallbackService(builder.Configuration);
+
+builder.Services.AddRubricApiClient(builder.Configuration);
+
 builder.Services.AddUiTestingServices(builder.Configuration);
 builder.Services.AddProcessTrackerService();
 builder.Services.AddGradingPipeline(builder.Configuration);

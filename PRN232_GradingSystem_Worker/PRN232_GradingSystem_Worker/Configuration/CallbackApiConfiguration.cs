@@ -9,6 +9,8 @@ public sealed class CallbackApiConfiguration
 
     public string BaseUrl { get; set; } = string.Empty;
     public string UpdateResultEndpoint { get; set; } = "/api/grading/update-result";
+
+    public string GetRubricEndpoint { get; set; } = "/api/rubrics/{examCode}";
     public int TimeoutSeconds { get; set; } = 30;
 }
 
