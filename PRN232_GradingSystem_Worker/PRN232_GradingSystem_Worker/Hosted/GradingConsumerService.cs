@@ -11,6 +11,7 @@ using PRN232_GradingSystem_Worker_Repo.Models;
 using PRN232_GradingSystem_Worker_Services.Implementations;
 using PRN232_GradingSystem_Worker_Services.Interfaces;
 using PRN232_GradingSystem_Worker_Services.Models;
+using PRN232_GradingSystem_Worker_Services.Models.Rubric;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
@@ -177,7 +178,7 @@ namespace PRN232_GradingSystem_Worker.Hosted
                                 job.ExaminerCode,
                                 stoppingToken);
 
-                            await SendCallbackAsync(job.SubmissionId, job.ExaminerCode ?? string.Empty, result, stoppingToken);
+                            await SendCallbackAsync(job.SubmissionId, job.ExaminerCode ?? string.Empty, result,result.Rubric, stoppingToken);
 
                             _channel!.BasicAck(ea.DeliveryTag, false);
                         }
@@ -202,8 +203,16 @@ namespace PRN232_GradingSystem_Worker.Hosted
             }
         }
 
-        private async Task SendCallbackAsync(string submissionId, string examinerCode, GradingResult result, CancellationToken cancellationToken)
+        private async Task SendCallbackAsync(string submissionId, string examinerCode, GradingResult result,ExamRubricDto? rubric, CancellationToken cancellationToken)
         {
+            _logger.LogInformation(
+                "[SendCallback] Rubric check | SubmissionId={SubmissionId} | HasRubric={HasRubric} | ExamCode={ExamCode} | QuestionCount={QuestionCount}",
+                submissionId,
+                rubric != null,
+                rubric?.Examcode,
+                rubric?.Questions?.Count ?? 0
+            );
+            
             try
             {
                 // Create GradeDetailRequest from TestResultDetail

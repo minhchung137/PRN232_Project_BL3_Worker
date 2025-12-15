@@ -142,6 +142,8 @@ public static class ServiceCollectionExtensions
             var processTracker = sp.GetRequiredService<ProcessTrackerService>();
             var logger = sp.GetRequiredService<ILogger<PRN232_GradingSystem_Worker_Services.Implementations.GradingPipeline>>();
             var configuration = sp.GetRequiredService<IConfiguration>();
+            var rubricClient = sp.GetRequiredService<IRubricApiClient>();
+            
             return new PRN232_GradingSystem_Worker_Services.Implementations.GradingPipeline(
                 fileDownloadService,
                 dbResetService,
@@ -150,7 +152,8 @@ public static class ServiceCollectionExtensions
                 logger,
                 configuration,
                 workingDir,
-                resetScript);
+                resetScript,
+                rubricClient);
         });
 
         return services;
@@ -190,5 +193,28 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IUITestService, PlaywrightTestService>();
         return services;
     }
+    
+    public static IServiceCollection AddRubricApiClient(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var config = configuration.GetSection(CallbackApiConfiguration.SectionName)
+            .Get<CallbackApiConfiguration>() ?? new CallbackApiConfiguration();
+
+        services.AddSingleton<IRubricApiClient>(sp =>
+        {
+            var httpClientFactory = sp.GetRequiredService<IHttpClientFactory>();
+
+            return new HttpRubricApiClient(
+                config.BaseUrl,
+                config.GetRubricEndpoint,
+                config.TimeoutSeconds,
+                httpClientFactory);
+        });
+
+        return services;
+    }
+    
+    
 }
 

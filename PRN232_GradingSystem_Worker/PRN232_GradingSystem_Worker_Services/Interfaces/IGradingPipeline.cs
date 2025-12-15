@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using PRN232_GradingSystem_Worker_Repo.Models;
 using PRN232_GradingSystem_Worker_Services.Models;
+using PRN232_GradingSystem_Worker_Services.Models.Rubric;
 
 namespace PRN232_GradingSystem_Worker_Services.Interfaces
 {
@@ -28,6 +29,8 @@ namespace PRN232_GradingSystem_Worker_Services.Interfaces
         public TimeSpan Duration { get; set; }
         public List<GradingStepLog> StepLogs { get; set; } = new();
         public TestResultDetail? TestResultDetail { get; set; }
+        
+        public ExamRubricDto? Rubric { get; set; }
     }
 
     public sealed class GradingStepLog

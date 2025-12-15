@@ -19,6 +19,7 @@ using PRN232_GradingSystem_Worker_Repo.DBContext;
 using PRN232_GradingSystem_Worker_Repo.Models;
 using PRN232_GradingSystem_Worker_Services.Interfaces;
 using PRN232_GradingSystem_Worker_Services.Models;
+using PRN232_GradingSystem_Worker_Services.Models.Rubric;
 using PRN232_GradingSystem_Worker_Services.Settings;
 
 namespace PRN232_GradingSystem_Worker_Services.Implementations
@@ -34,6 +35,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
         private readonly string _workingDirectory;
         private readonly string _resetScript;
         private readonly ValidationSettings _validationSettings;
+        private readonly IRubricApiClient _rubricClient;
         
         // Dictionary to store StudentId string (from RabbitMQ) mapped to SubmissionId
         // This allows us to retrieve the original StudentId string when duplicate is detected
@@ -52,7 +54,8 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             ILogger<GradingPipeline> logger,
             IConfiguration configuration,
             string workingDirectory,
-            string resetScript)
+            string resetScript,
+            IRubricApiClient rubricClient)
         {
             _fileDownloadService = fileDownloadService ?? throw new ArgumentNullException(nameof(fileDownloadService));
             _dbResetService = dbResetService ?? throw new ArgumentNullException(nameof(dbResetService));
@@ -62,6 +65,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
             _workingDirectory = workingDirectory ?? throw new ArgumentNullException(nameof(workingDirectory));
             _resetScript = resetScript ?? throw new ArgumentNullException(nameof(resetScript));
+            _rubricClient = rubricClient ?? throw new ArgumentNullException(nameof(rubricClient));
             _validationSettings = _configuration.GetSection(ValidationSettings.SectionName).Get<ValidationSettings>()
                 ?? new ValidationSettings();
         }
@@ -153,6 +157,97 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                 return result;
             }
 
+            ExamRubricDto? rubric = null;
+            
+            if (string.IsNullOrWhiteSpace(examCode))
+            {
+                stepLogs.Add(new GradingStepLog
+                {
+                    Step = "Rubric",
+                    Message = "ExamCode is required to load rubric.",
+                    Level = "Error"
+                });
+
+                // format 0 điểm chuẩn như fail-fast khác
+                result.Success = true;
+                result.AutoScore = 0;
+                result.TotalTests = 6;
+                result.PassedTests = 0;
+                result.Note = "Failed to load rubric: ExamCode is required.";
+                result.TestResultDetail = CreateZeroScoreTestResultDetail("Failed to load rubric: ExamCode is required.");
+                result.StepLogs = stepLogs;
+                result.Duration = DateTime.UtcNow - startTime;
+
+                stepLogs.Add(new GradingStepLog
+                {
+                    Step = "Test",
+                    Message = "Tests skipped: 0/6 passed (Rubric load failed)",
+                    Level = "Error"
+                });
+
+                return result;
+            }
+            
+            try
+            {
+                rubric = await _rubricClient.GetRubricAsync(examCode, cancellationToken);
+                
+                result.Rubric = rubric;
+                
+                var qCount = rubric?.Questions?.Count ?? 0;
+
+                stepLogs.Add(new GradingStepLog
+                {
+                    Step = "Rubric",
+                    Message = $"Rubric loaded successfully. ExamCode={rubric?.Examcode ?? examCode}, Questions={qCount}"
+                });
+
+                _logger.LogInformation(
+                    "[GradingPipeline] Rubric loaded successfully. ExamCode={ExamCode}, Questions={Count}",
+                    rubric?.Examcode ?? examCode,
+                    qCount
+                );
+
+                // Optional: rubric rỗng thì warning (không fail)
+                if (qCount == 0)
+                {
+                    stepLogs.Add(new GradingStepLog
+                    {
+                        Step = "Rubric",
+                        Message = "Rubric loaded but contains no questions/criteria. Auto grading may fallback.",
+                        Level = "Warning"
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                stepLogs.Add(new GradingStepLog
+                {
+                    Step = "Rubric",
+                    Message = $"Failed to load rubric: {ex.Message}",
+                    Level = "Error"
+                });
+
+                // trả result theo format 0 điểm "chuẩn" như các case fail-fast khác
+                result.Success = true;
+                result.AutoScore = 0;
+                result.TotalTests = 6;     // giữ format Q1-Q6 hiện tại của bạn
+                result.PassedTests = 0;
+                result.Note = $"Failed to load rubric: {ex.Message}";
+                result.TestResultDetail = CreateZeroScoreTestResultDetail($"Failed to load rubric: {ex.Message}");
+                result.StepLogs = stepLogs;
+                result.Duration = DateTime.UtcNow - startTime;
+
+                stepLogs.Add(new GradingStepLog
+                {
+                    Step = "Test",
+                    Message = "Tests skipped: 0/6 passed (Rubric load failed)",
+                    Level = "Error"
+                });
+
+                return result;
+            }
+            
             try
             {
                 // Step 1: Download ZIP file
