@@ -202,48 +202,58 @@ namespace PRN232_GradingSystem_Worker.Hosted
             }
         }
 
-        private async Task SendCallbackAsync(string submissionId, string examinerCode, GradingResult result, CancellationToken cancellationToken)
+        private async Task SendCallbackAsync(string submissionId,string examinerCode,GradingResult result,CancellationToken cancellationToken)
         {
             try
             {
-                // Create GradeDetailRequest from TestResultDetail
-                if (result.TestResultDetail != null)
+                // PRN232 Main Service luôn nhận GradeDetailRequest
+                if (result.TestResultDetail == null)
                 {
-                    // Only set comment for validation failures (0 score before Playwright runs)
-                    // Check if result.Note contains validation failure keywords
-                    string? comment = null;
-                    if (!string.IsNullOrWhiteSpace(result.Note))
+                    _logger.LogWarning(
+                        "Submission {SubmissionId} has no TestResultDetail. Skip callback.",
+                        submissionId);
+                    return;
+                }
+
+                // Set comment only for validation failures
+                string comment = string.Empty;
+                if (!string.IsNullOrWhiteSpace(result.Note))
+                {
+                    var noteLower = result.Note.ToLowerInvariant();
+                    if (noteLower.Contains("violation") ||
+                        noteLower.Contains("no solution file") ||
+                        noteLower.Contains("build failed") ||
+                        noteLower.Contains("application failed to start") ||
+                        noteLower.Contains("duplicate code") ||
+                        noteLower.Contains("processing failed"))
                     {
-                        var noteLower = result.Note.ToLowerInvariant();
-                        // Check for validation failure keywords
-                        if (noteLower.Contains("violation") || 
-                            noteLower.Contains("no solution file") || 
-                            noteLower.Contains("build failed") || 
-                            noteLower.Contains("application failed to start") || 
-                            noteLower.Contains("duplicate code") ||
-                            noteLower.Contains("processing failed"))
-                        {
-                            comment = result.Note;
-                        }
+                        comment = result.Note;
                     }
-                    
-                    var request = BuildGradeDetailRequest(submissionId, examinerCode, result.TestResultDetail, comment);
-                    await _callbackService.SendGradeDetailAsync(request, cancellationToken);
-                    _logger.LogInformation("Successfully sent grade detail callback for submission {SubmissionId}", submissionId);
                 }
-                else
-                {
-                    // Fallback to old format if TestResultDetail is not available
-                    await _callbackService.SendResultAsync(submissionId, result, cancellationToken);
-                    _logger.LogInformation("Successfully sent callback for submission {SubmissionId} (fallback format)", submissionId);
-                }
+
+                var request = BuildGradeDetailRequest(
+                    submissionId,
+                    examinerCode,
+                    result.TestResultDetail,
+                    comment
+                );
+
+                await _callbackService.SendGradeDetailAsync(request, cancellationToken);
+
+                _logger.LogInformation(
+                    "Successfully sent grade detail callback for submission {SubmissionId}",
+                    submissionId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send callback for submission {SubmissionId}", submissionId);
-                // Don't fail the job if callback fails - grading was successful
+                _logger.LogError(
+                    ex,
+                    "Failed to send grade detail callback for submission {SubmissionId}",
+                    submissionId);
+                // Không throw – grading đã xong
             }
         }
+
 
         private GradeDetailRequest BuildGradeDetailRequest(string submissionId, string examinerCode, TestResultDetail detail, string? comment = null)
         {

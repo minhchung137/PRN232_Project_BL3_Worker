@@ -89,7 +89,8 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             
             var listRequest = new
             {
-                bucketId = authResponse.Allowed.BucketId,
+                bucketId = "b6d1fc7153a6206d9dab0612",
+                //bucketId = authResponse.Allowed.BucketId,
                 startFileName = fileName,
                 maxFileCount = 1
             };
@@ -189,6 +190,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
     {
         public string Mode { get; set; } = string.Empty;
         public string KeyId { get; set; } = string.Empty;
+        public string BucketId { get; set; } = string.Empty;
         public string ApplicationKey { get; set; } = string.Empty;
         public string BucketName { get; set; } = string.Empty;
         public string ApiEndpoint { get; set; } = string.Empty;

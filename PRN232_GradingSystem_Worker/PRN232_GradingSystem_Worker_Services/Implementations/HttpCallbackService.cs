@@ -1,11 +1,13 @@
+using PRN232_GradingSystem_Worker_Services.Interfaces;
+using PRN232_GradingSystem_Worker_Services.Models;
 using System;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using PRN232_GradingSystem_Worker_Services.Interfaces;
-using PRN232_GradingSystem_Worker_Services.Models;
 
 namespace PRN232_GradingSystem_Worker_Services.Implementations
 {
@@ -34,7 +36,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
         {
             var requestBody = new
             {
-                SubmissionId = submissionId,
+                SubmissionId = int.Parse(submissionId),
                 Success = result.Success,
                 AutoScore = result.AutoScore,
                 TotalTests = result.TotalTests,
@@ -66,10 +68,25 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             { 
                 WriteIndented = false
             });
-            
+            var handler = new HttpClientHandler()
+            {
+                AutomaticDecompression = DecompressionMethods.None
+            };
             var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
             var httpClient = _httpClientFactory.CreateClient();
+            //httpClient.Timeout = TimeSpan.FromSeconds(_timeoutSeconds);
+
+            //using var httpClient = new HttpClient(handler);
+
+            httpClient.DefaultRequestVersion = HttpVersion.Version11;
+            httpClient.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
+            httpClient.Timeout = TimeSpan.FromSeconds(_timeoutSeconds);
+            httpClient.DefaultRequestHeaders.Accept.Clear();
+
+            httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+
             httpClient.Timeout = TimeSpan.FromSeconds(_timeoutSeconds);
 
             // Log the request for debugging
