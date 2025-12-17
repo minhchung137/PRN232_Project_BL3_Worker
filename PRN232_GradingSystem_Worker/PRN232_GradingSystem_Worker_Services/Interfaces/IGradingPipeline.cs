@@ -29,6 +29,7 @@ namespace PRN232_GradingSystem_Worker_Services.Interfaces
         public TimeSpan Duration { get; set; }
         public List<GradingStepLog> StepLogs { get; set; } = new();
         public TestResultDetail? TestResultDetail { get; set; }
+        public ApiGradingResultResponse? ApiGradingResult { get; set; } // Kết quả API grading để truyền trực tiếp sang API
     }
 
     public sealed class GradingStepLog

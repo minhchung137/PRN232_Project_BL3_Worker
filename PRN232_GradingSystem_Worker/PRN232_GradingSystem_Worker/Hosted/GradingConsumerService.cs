@@ -207,37 +207,75 @@ namespace PRN232_GradingSystem_Worker.Hosted
         {
             try
             {
-                // PRN232 Main Service luôn nhận GradeDetailRequest
-                if (result.TestResultDetail == null)
+                GradeDetailRequest request;
+
+                // Ưu tiên: Nếu có ApiGradingResult (tiêu chí mới), dùng nó trực tiếp
+                if (result.ApiGradingResult != null)
+                {
+                    _logger.LogInformation(
+                        "Submission {SubmissionId} has ApiGradingResult. Building GradeDetailRequest from API grading criteria.",
+                        submissionId);
+
+                    // Set comment only for validation failures
+                    string comment = string.Empty;
+                    if (!string.IsNullOrWhiteSpace(result.Note))
+                    {
+                        var noteLower = result.Note.ToLowerInvariant();
+                        if (noteLower.Contains("violation") ||
+                            noteLower.Contains("no solution file") ||
+                            noteLower.Contains("build failed") ||
+                            noteLower.Contains("application failed to start") ||
+                            noteLower.Contains("duplicate code") ||
+                            noteLower.Contains("processing failed"))
+                        {
+                            comment = result.Note;
+                        }
+                    }
+
+                    request = BuildGradeDetailRequestFromApiGrading(
+                        submissionId,
+                        examinerCode,
+                        result.ApiGradingResult,
+                        comment
+                    );
+                }
+                // Fallback: Nếu có TestResultDetail (code cũ - Playwright), dùng nó
+                else if (result.TestResultDetail != null)
+                {
+                    _logger.LogInformation(
+                        "Submission {SubmissionId} has TestResultDetail. Building GradeDetailRequest from TestResultDetail.",
+                        submissionId);
+
+                    // Set comment only for validation failures
+                    string comment = string.Empty;
+                    if (!string.IsNullOrWhiteSpace(result.Note))
+                    {
+                        var noteLower = result.Note.ToLowerInvariant();
+                        if (noteLower.Contains("violation") ||
+                            noteLower.Contains("no solution file") ||
+                            noteLower.Contains("build failed") ||
+                            noteLower.Contains("application failed to start") ||
+                            noteLower.Contains("duplicate code") ||
+                            noteLower.Contains("processing failed"))
+                        {
+                            comment = result.Note;
+                        }
+                    }
+
+                    request = BuildGradeDetailRequest(
+                        submissionId,
+                        examinerCode,
+                        result.TestResultDetail,
+                        comment
+                    );
+                }
+                else
                 {
                     _logger.LogWarning(
-                        "Submission {SubmissionId} has no TestResultDetail. Skip callback.",
+                        "Submission {SubmissionId} has no TestResultDetail or ApiGradingResult. Skip callback.",
                         submissionId);
                     return;
                 }
-
-                // Set comment only for validation failures
-                string comment = string.Empty;
-                if (!string.IsNullOrWhiteSpace(result.Note))
-                {
-                    var noteLower = result.Note.ToLowerInvariant();
-                    if (noteLower.Contains("violation") ||
-                        noteLower.Contains("no solution file") ||
-                        noteLower.Contains("build failed") ||
-                        noteLower.Contains("application failed to start") ||
-                        noteLower.Contains("duplicate code") ||
-                        noteLower.Contains("processing failed"))
-                    {
-                        comment = result.Note;
-                    }
-                }
-
-                var request = BuildGradeDetailRequest(
-                    submissionId,
-                    examinerCode,
-                    result.TestResultDetail,
-                    comment
-                );
 
                 await _callbackService.SendGradeDetailAsync(request, cancellationToken);
 
@@ -413,6 +451,150 @@ namespace PRN232_GradingSystem_Worker.Hosted
                 Point = detail.Q6DeleteWithSignalR,
                 Note = detail.Q6DeleteWithSignalRNote
             });
+
+            return request;
+        }
+
+        /// <summary>
+        /// Build GradeDetailRequest trực tiếp từ ApiGradingResultResponse (tiêu chí mới - API grading)
+        /// Mỗi endpoint (Create, Update, Delete, GetAll, GetById, Search) trở thành 1 GradeDetailItem
+        /// </summary>
+        private GradeDetailRequest BuildGradeDetailRequestFromApiGrading(
+            string submissionId, 
+            string examinerCode, 
+            ApiGradingResultResponse apiGradingResult, 
+            string? comment = null)
+        {
+            // Parse submissionId to int
+            int submissionIdInt = 0;
+            if (!int.TryParse(submissionId, out submissionIdInt))
+            {
+                submissionIdInt = Math.Abs(submissionId.GetHashCode());
+            }
+
+            var request = new GradeDetailRequest
+            {
+                SubmissionId = submissionIdInt,
+                Marker = examinerCode,
+                Comment = comment ?? string.Empty,
+                GradeDetails = new List<GradeDetailItem>()
+            };
+
+            // Null check: Nếu apiGradingResult hoặc EndpointScores null/empty, trả về request rỗng
+            if (apiGradingResult == null || apiGradingResult.EndpointScores == null || apiGradingResult.EndpointScores.Count == 0)
+            {
+                _logger.LogWarning(
+                    "ApiGradingResult or EndpointScores is null/empty. Returning empty GradeDetailRequest.");
+                return request;
+            }
+
+            // Helper: Build note từ CriteriaChecks
+            string BuildNoteFromCriteria(EndpointScoreResponse endpointScore)
+            {
+                if (endpointScore == null)
+                {
+                    return "Endpoint score is null.";
+                }
+
+                if (!endpointScore.EndpointExists)
+                {
+                    return $"Endpoint không tồn tại. Kỳ vọng: {endpointScore.Endpoint ?? "N/A"}";
+                }
+
+                if (endpointScore.CriteriaChecks == null || endpointScore.CriteriaChecks.Count == 0)
+                {
+                    return "Endpoint tồn tại nhưng không có tiêu chí chi tiết.";
+                }
+
+                var parts = new List<string>();
+                foreach (var criteria in endpointScore.CriteriaChecks)
+                {
+                    if (criteria == null) continue;
+
+                    if (criteria.Passed)
+                    {
+                        parts.Add($"✓ {criteria.Description ?? "N/A"}");
+                    }
+                    else
+                    {
+                        if (!string.IsNullOrWhiteSpace(criteria.Details))
+                        {
+                            parts.Add($"✗ {criteria.Description ?? "N/A"} ({criteria.Details})");
+                        }
+                        else
+                        {
+                            parts.Add($"✗ {criteria.Description ?? "N/A"}");
+                        }
+                    }
+                }
+
+                return parts.Count > 0 ? string.Join(" | ", parts) : "Không có tiêu chí nào được kiểm tra.";
+            }
+
+            // Map từng endpoint trong ApiGradingResultResponse → GradeDetailItem
+            // Sử dụng QCode = "API" để phân biệt với code cũ (Q1..Q6)
+            // SubCode = tên endpoint (Create, Update, Delete, GetAll, GetById, Search)
+            foreach (var endpointScore in apiGradingResult.EndpointScores)
+            {
+                // Lấy tên endpoint ngắn gọn từ Function
+                // Lưu ý: Function name từ ApiGradingService là "Get by ID (Chi tiết)" (theo tiêu chí hardcode)
+                // Cần check "Get by ID" TRƯỚC "Get All" để tránh match sai
+                string GetEndpointSubCode(string function)
+                {
+                    // Check Create, Update, Delete trước
+                    if (function.Contains("Create", StringComparison.OrdinalIgnoreCase)) return "Create";
+                    if (function.Contains("Update", StringComparison.OrdinalIgnoreCase)) return "Update";
+                    if (function.Contains("Delete", StringComparison.OrdinalIgnoreCase)) return "Delete";
+                    
+                    // Check "Get by ID" TRƯỚC "Get All" để tránh match sai
+                    // Pattern: "Get by ID" hoặc "GetById" (có thể có thêm text như "(Chi tiết)")
+                    if (function.Contains("Get by ID", StringComparison.OrdinalIgnoreCase) || 
+                        function.Contains("GetById", StringComparison.OrdinalIgnoreCase)) 
+                        return "GetById";
+                    
+                    // Check "Get All" sau "Get by ID"
+                    if (function.Contains("Get All", StringComparison.OrdinalIgnoreCase) || 
+                        function.Contains("GetAll", StringComparison.OrdinalIgnoreCase)) 
+                        return "GetAll";
+                    
+                    // Check Search
+                    if (function.Contains("Search", StringComparison.OrdinalIgnoreCase)) return "Search";
+                    
+                    // Fallback: lấy từ đầu
+                    return function.Split(' ')[0];
+                }
+
+                // Null check cho endpointScore
+                if (endpointScore == null)
+                {
+                    _logger.LogWarning("Skipping null endpointScore in ApiGradingResult.");
+                    continue;
+                }
+
+                var subCode = GetEndpointSubCode(endpointScore.Function ?? string.Empty);
+                var note = BuildNoteFromCriteria(endpointScore);
+
+                request.GradeDetails.Add(new GradeDetailItem
+                {
+                    GradeId = 0, // Sẽ được API set khi tạo Grade
+                    QCode = "API", // Dùng "API" để phân biệt với Q1..Q6 cũ
+                    SubCode = subCode, // Tên endpoint: Create, Update, Delete, GetAll, GetById, Search
+                    Point = endpointScore.Score,
+                    Note = note
+                });
+            }
+
+            // Log warning nếu không có grade details nào
+            if (request.GradeDetails.Count == 0)
+            {
+                _logger.LogWarning(
+                    "No grade details were created from ApiGradingResult. EndpointScores may be empty or invalid.");
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Created {Count} grade details from ApiGradingResult.", request.GradeDetails.Count);
+            }
 
             return request;
         }

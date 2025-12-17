@@ -705,6 +705,9 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                         result.Note = apiGradingResult.BuildStatus == "Success" 
                             ? $"API Grading: {apiGradingResult.TotalScore:F2}/{apiGradingResult.MaxScore:F1} points" 
                             : $"Build failed: {apiGradingResult.BuildError}";
+
+                        // Lưu ApiGradingResult để truyền trực tiếp sang API (không qua TestResultDetail)
+                        result.ApiGradingResult = apiGradingResult;
                     }
 
                     result.StepLogs = stepLogs;
