@@ -127,6 +127,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             string? examCode,
             string? studentId,
             string? examinerCode,
+            string? entityName,
             CancellationToken cancellationToken)
         {
             var result = new GradingResult();
@@ -591,29 +592,122 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
 
                 try
                 {
-                    // Step 7: Run UI Tests (Playwright)
-                    _logger.LogInformation("[GradingPipeline] Step 7: Running UI tests with Playwright...");
-                    stepLogs.Add(new GradingStepLog { Step = "Test", Message = "Running UI tests" });
-                    TestResultDetail? testResultDetail = null;
+                    // Step 7: Run API Grading
+                    _logger.LogInformation("[ApiGrading] Step 7: Running API grading...");
+                    stepLogs.Add(new GradingStepLog { Step = "ApiGrading", Message = "Running API grading" });
+                    
                     using (var scope = _serviceScopeFactory.CreateScope())
                     {
-                        var uiTestService = scope.ServiceProvider.GetRequiredService<IUITestService>();
-                        var (total, passed, detail) = await uiTestService.RunAsync(app.BaseUrl, cancellationToken);
-                        testResultDetail = detail;
-                        stepLogs.Add(new GradingStepLog { Step = "Test", Message = $"Tests completed: {passed}/{total} passed" });
+                        var apiGradingService = scope.ServiceProvider.GetRequiredService<IApiGradingService>();
+                        
+                        // EntityName có thể tự động detect từ controller hoặc truyền qua message
+                        // Nếu không có, sẽ tự động detect từ controller
+                        var apiEntityName = entityName ?? string.Empty;
+                        
+                        // Log thông tin ban đầu
+                        _logger.LogInformation("[ApiGrading] Entity Name: {EntityName} (auto-detected: {IsAutoDetected})", 
+                            apiEntityName, 
+                            string.IsNullOrWhiteSpace(apiEntityName) ? "Yes" : "No");
+                        _logger.LogInformation("[ApiGrading] Project Path: {ProjectPath}", projectPath);
+                        
+                        var apiGradingResult = await apiGradingService.GradeApiAsync(projectPath, apiEntityName, cancellationToken);
+                        
+                        // Map Function names to short endpoint names for logging
+                        string GetEndpointName(string function)
+                        {
+                            if (function.Contains("Create")) return "Create";
+                            if (function.Contains("Update")) return "Update";
+                            if (function.Contains("Delete")) return "Delete";
+                            if (function.Contains("Get All") || function.Contains("GetAll")) return "GetAll";
+                            if (function.Contains("Get by ID") || function.Contains("GetById")) return "GetById";
+                            if (function.Contains("Search")) return "Search";
+                            return function.Split(' ')[0];
+                        }
+                        
+                        // Log kết quả theo format giống các bước validation
+                        _logger.LogInformation("[ApiGrading] Step 7: Running API grading...");
+                        _logger.LogInformation("[ApiGrading] Entity Name: {EntityName}", apiGradingResult.EntityName);
+                        _logger.LogInformation("[ApiGrading] Build Status: {BuildStatus}", apiGradingResult.BuildStatus);
+                        
+                        // Log từng endpoint với điểm số và chi tiết
+                        foreach (var endpointScore in apiGradingResult.EndpointScores)
+                        {
+                            var endpointName = GetEndpointName(endpointScore.Function);
+                            var status = endpointScore.EndpointExists ? "Found" : "Not Found";
+                            
+                            _logger.LogInformation("[ApiGrading] {Endpoint} Score: {Score}/{MaxScore} - {Status} - {EndpointPattern}", 
+                                endpointName, 
+                                endpointScore.Score.ToString("F2"), 
+                                endpointScore.MaxScore.ToString("F1"),
+                                status,
+                                endpointScore.Endpoint);
+                            
+                            // Log error nếu có
+                            if (!string.IsNullOrEmpty(endpointScore.ErrorMessage))
+                            {
+                                _logger.LogWarning("[ApiGrading] {Endpoint} Error: {Error}", endpointName, endpointScore.ErrorMessage);
+                            }
+                            
+                            // Log chi tiết từng criteria check
+                            foreach (var criteriaCheck in endpointScore.CriteriaChecks)
+                            {
+                                var checkStatus = criteriaCheck.Passed ? "PASS" : "FAIL";
+                                _logger.LogInformation("[ApiGrading]   - {Criteria}: {Status}", 
+                                    criteriaCheck.Description, 
+                                    checkStatus);
+                                if (!criteriaCheck.Passed && !string.IsNullOrEmpty(criteriaCheck.Details))
+                                {
+                                    _logger.LogInformation("[ApiGrading]     Details: {Details}", criteriaCheck.Details);
+                                }
+                            }
+                        }
+                        
+                        // Log separator
+                        _logger.LogInformation("[ApiGrading] ========================================");
+                        
+                        // Log tất cả điểm trên một dòng
+                        var scoreLine = string.Join(" | ", apiGradingResult.EndpointScores.Select(e => 
+                        {
+                            var endpointName = GetEndpointName(e.Function);
+                            return $"{endpointName} Score: {e.Score:F2}/{e.MaxScore:F1}";
+                        }));
+                        _logger.LogInformation("[ApiGrading] {ScoreLine}", scoreLine);
+                        
+                        // Log tổng điểm
+                        _logger.LogInformation("[ApiGrading] Total Score: {TotalScore}/{MaxScore}", 
+                            apiGradingResult.TotalScore.ToString("F2"), 
+                            apiGradingResult.MaxScore.ToString("F1"));
+                        _logger.LogInformation("[ApiGrading] ========================================");
+                        
+                        stepLogs.Add(new GradingStepLog { Step = "ApiGrading", Message = $"API grading completed. Score: {apiGradingResult.TotalScore:F2}/{apiGradingResult.MaxScore:F1}" });
+                        
+                        // Log chi tiết từng endpoint vào stepLogs
+                        foreach (var endpointScore in apiGradingResult.EndpointScores)
+                        {
+                            var status = endpointScore.EndpointExists ? "Found" : "Not Found";
+                            var criteriaDetails = string.Join(", ", endpointScore.CriteriaChecks.Select(c => 
+                                c.Passed ? $"✓ {c.Description}" : $"✗ {c.Description}"));
+                            
+                            stepLogs.Add(new GradingStepLog 
+                            { 
+                                Step = "ApiGrading", 
+                                Message = $"{endpointScore.Function}: {status}, Score: {endpointScore.Score:F2}/{endpointScore.MaxScore:F1} ({criteriaDetails})" 
+                            });
+                        }
 
-                        result.Success = true;
-                        result.AutoScore = total > 0 ? (passed * 100) / total : 0;
-                        result.TotalTests = total;
-                        result.PassedTests = passed;
-                        result.Note = passed == total ? "All tests passed" : $"{passed}/{total} tests passed";
+                        // Tính điểm: chuyển từ điểm thập phân sang phần trăm
+                        result.Success = apiGradingResult.BuildStatus == "Success";
+                        result.AutoScore = apiGradingResult.MaxScore > 0 
+                            ? (int)Math.Round((apiGradingResult.TotalScore / apiGradingResult.MaxScore) * 100) 
+                            : 0;
+                        result.TotalTests = apiGradingResult.EndpointScores.Count;
+                        result.PassedTests = apiGradingResult.EndpointScores.Count(e => e.EndpointExists && e.Score > 0);
+                        result.Note = apiGradingResult.BuildStatus == "Success" 
+                            ? $"API Grading: {apiGradingResult.TotalScore:F2}/{apiGradingResult.MaxScore:F1} points" 
+                            : $"Build failed: {apiGradingResult.BuildError}";
                     }
 
-                    // Store testResultDetail in result for callback
                     result.StepLogs = stepLogs;
-                    result.TestResultDetail = testResultDetail;
-
-                    // scoring already set from ui test service above
                 }
                 finally
                 {
@@ -1777,10 +1871,10 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             Console.WriteLine($"  Solution directory: {Path.GetRelativePath(projectPath, solutionDir!)}");
             
             // Step 2: Check solution name format (must start with PE_PRN222_)
-            if (!solutionName.StartsWith("PE_PRN222_", StringComparison.OrdinalIgnoreCase))
+            if (!solutionName.StartsWith("PRN232_", StringComparison.OrdinalIgnoreCase))
             {
                 Console.WriteLine($"  Solution name format invalid: {solutionName}");
-                Console.WriteLine($"  Expected: starts with PE_PRN222_");
+                Console.WriteLine($"  Expected: starts with PRN232_");
                 Console.WriteLine($"  Result: FAIL");
                 return new ValidationResult 
                 { 

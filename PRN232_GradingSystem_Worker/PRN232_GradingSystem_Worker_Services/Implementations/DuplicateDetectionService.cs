@@ -21,10 +21,10 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
         private readonly CodeParserService _codeParserService;
         private readonly ILogger<DuplicateDetectionService> _logger;
 
-        // C?U H?NH NGÝ?NG Ð?O VÃN
-        private const double SimilarityThreshold = 0.85; // Gi?ng nhau >= 85% là ð?o vãn
+        // C?U H?NH NGï¿½?NG ï¿½?O Vï¿½N
+        private const double SimilarityThreshold = 0.85; // Gi?ng nhau >= 85% lï¿½ ï¿½?o vï¿½n
 
-        // GI?I H?N HI?U NÃNG
+        // GI?I H?N HI?U Nï¿½NG
         private const int MaxUnitsPerFile = 150;
         private const int MaxUnitsPerSubmission = 4000;
         private const long MaxFileSizeBytes = 200_000; // ~200KB
@@ -40,13 +40,21 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
         }
 
         // =================================================================================================
-        // PH?N 1: TÁCH CODE & T?O VECTOR GI? (Preprocessing)
+        // PH?N 1: Tï¿½CH CODE & T?O VECTOR GI? (Preprocessing)
         // =================================================================================================
         public async Task ExtractCodeUnitsAsync(Submission submission, string projectPath, CancellationToken cancellationToken)
         {
             _logger.LogDebug("Extracting code units for submission {SubmissionId}", submission.SubmissionId);
 
-            // 1. D?n d?p d? li?u c? (ð? tránh trùng l?p khi ch?y l?i)
+            // 1. D?n d?p d? li?u c? (?? tr?nh tr?ng l?p khi ch?y l?i)
+            // QUAN TR?NG: X?a theo th? t? ?? tr?nh vi ph?m foreign key constraint
+            // - X?a CodeEmbeddings tr??c (child table, c? FK ??n CodeUnits)
+            // - Sau ?? x?a CodeUnits (parent table c?a CodeEmbeddings)
+            // - Cu?i c?ng x?a CodeFiles (parent table c?a CodeUnits)
+            
+            var oldEmbeddings = _context.CodeEmbeddings.Where(e => e.SubmissionId == submission.SubmissionId);
+            _context.CodeEmbeddings.RemoveRange(oldEmbeddings);
+            
             var oldUnits = _context.CodeUnits.Where(u => u.SubmissionId == submission.SubmissionId);
             _context.CodeUnits.RemoveRange(oldUnits);
 
@@ -55,12 +63,12 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
 
             await _context.SaveChangesAsync(cancellationToken);
 
-            // 2. Quét file trong thý m?c Project
+            // 2. Quï¿½t file trong thï¿½ m?c Project
             var newCodeFiles = GetCodeFilesFromProject(projectPath, submission.SubmissionId);
             _context.CodeFiles.AddRange(newCodeFiles);
             await _context.SaveChangesAsync(cancellationToken);
 
-            // 3. Tách t?ng hàm (Unit) và t?o Vector
+            // 3. Tï¿½ch t?ng hï¿½m (Unit) vï¿½ t?o Vector
             var totalUnits = 0;
             foreach (var codeFile in newCodeFiles)
             {
@@ -69,7 +77,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
 
                 var fileContent = await File.ReadAllTextAsync(filePath, cancellationToken);
 
-                // Dùng CodeParserService ð? tách hàm
+                // Dï¿½ng CodeParserService ï¿½? tï¿½ch hï¿½m
                 var units = _codeParserService.ExtractCodeUnits(fileContent, codeFile.RelPath, codeFile.Language)
                     .Take(MaxUnitsPerFile);
 
@@ -77,7 +85,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                 {
                     if (totalUnits >= MaxUnitsPerSubmission) break;
 
-                    // Lýu CodeUnit
+                    // Lï¿½u CodeUnit
                     var codeUnit = new CodeUnit
                     {
                         UnitId = Guid.NewGuid(),
@@ -89,23 +97,23 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                         StartLine = unitInfo.StartLine,
                         EndLine = unitInfo.EndLine,
                         CreatedAt = DateTime.UtcNow
-                        // ContentHash ð? b? xóa trong DB m?i nên không map ? ðây
+                        // ContentHash ï¿½? b? xï¿½a trong DB m?i nï¿½n khï¿½ng map ? ï¿½ï¿½y
                     };
 
                     _context.CodeUnits.Add(codeUnit);
 
                     // --- LOGIC T?O VECTOR GI? (QUAN TR?NG CHO LOCAL) ---
-                    // V? không có AI th?t, ta t?o vector d?a trên ð?c ði?m chu?i
+                    // V? khï¿½ng cï¿½ AI th?t, ta t?o vector d?a trï¿½n ï¿½?c ï¿½i?m chu?i
                     float[] fakeVector = GenerateFakeVector(unitInfo.Content);
 
-                    // Lýu Embedding (Serialize m?ng float thành chu?i JSON)
+                    // Lï¿½u Embedding (Serialize m?ng float thï¿½nh chu?i JSON)
                     var embedding = new CodeEmbedding
                     {
                         UnitId = codeUnit.UnitId,
                         SubmissionId = submission.SubmissionId,
                         ModelName = "FakeLocalModel",
                         EmbeddingDimension = fakeVector.Length,
-                        Emb = JsonSerializer.Serialize(fakeVector), // Lýu vào c?t TEXT
+                        Emb = JsonSerializer.Serialize(fakeVector), // Lï¿½u vï¿½o c?t TEXT
                         CreatedAt = DateTime.UtcNow
                     };
                     _context.CodeEmbeddings.Add(embedding);
@@ -118,14 +126,14 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
         }
 
         // =================================================================================================
-        // PH?N 2: PHÁT HI?N Ð?O VÃN (Core Logic)
+        // PH?N 2: PHï¿½T HI?N ï¿½?O Vï¿½N (Core Logic)
         // =================================================================================================
         public async Task<DuplicateDetectionResult> DetectDuplicatesAsync(Submission submission, CancellationToken cancellationToken)
         {
             _logger.LogInformation("Starting detection for {SubmissionId}", submission.SubmissionId);
 
-            // 1. L?y vector c?a bài hi?n t?i t? DB
-            // Ch? l?y c?t c?n thi?t ð? ti?t ki?m RAM
+            // 1. L?y vector c?a bï¿½i hi?n t?i t? DB
+            // Ch? l?y c?t c?n thi?t ï¿½? ti?t ki?m RAM
             var currentVectors = await _context.CodeEmbeddings
                 .AsNoTracking()
                 .Where(x => x.SubmissionId == submission.SubmissionId)
@@ -135,7 +143,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             if (!currentVectors.Any())
                 return new DuplicateDetectionResult { SubmissionId1 = submission.SubmissionId, IsDuplicate = false };
 
-            // 2. L?y vector c?a T?T C? bài khác trong cùng Exam
+            // 2. L?y vector c?a T?T C? bï¿½i khï¿½c trong cï¿½ng Exam
             var otherCandidates = await _context.CodeEmbeddings
                 .AsNoTracking()
                 .Where(x => x.Submission.ExamId == submission.ExamId && x.SubmissionId != submission.SubmissionId)
@@ -146,25 +154,25 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             Guid bestMatchSubmissionId = Guid.Empty;
             var matches = new List<MatchResult>();
 
-            // 3. V?ng l?p so sánh (Brute-force in Memory)
-            // Lýu ?: V?i d? li?u l?n (>10k units), cách này s? ch?m. Nhýng ð? án th? tho?i mái.
+            // 3. V?ng l?p so sï¿½nh (Brute-force in Memory)
+            // Lï¿½u ?: V?i d? li?u l?n (>10k units), cï¿½ch nï¿½y s? ch?m. Nhï¿½ng ï¿½? ï¿½n th? tho?i mï¿½i.
             foreach (var curr in currentVectors)
             {
-                // Deserialize vector bài m?nh
+                // Deserialize vector bï¿½i m?nh
                 float[] v1 = JsonSerializer.Deserialize<float[]>(curr.Emb);
 
                 foreach (var other in otherCandidates)
                 {
-                    // Deserialize vector bài ngý?i khác
+                    // Deserialize vector bï¿½i ngï¿½?i khï¿½c
                     float[] v2 = JsonSerializer.Deserialize<float[]>(other.Emb);
 
-                    // Tính ð? týõng ð?ng
+                    // Tï¿½nh ï¿½? tï¿½ï¿½ng ï¿½?ng
                     double score = CalculateCosineSimilarity(v1, v2);
 
-                    // N?u vý?t ngý?ng -> Lýu l?i v?t
+                    // N?u vï¿½?t ngï¿½?ng -> Lï¿½u l?i v?t
                     if (score >= SimilarityThreshold)
                     {
-                        // T?o MatchResult (Kh?p v?i DB m?i ð? xóa các c?t th?a)
+                        // T?o MatchResult (Kh?p v?i DB m?i ï¿½? xï¿½a cï¿½c c?t th?a)
                         matches.Add(new MatchResult
                         {
                             ExamId = submission.ExamId,
@@ -175,7 +183,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                             CreatedAt = DateTime.UtcNow
                         });
 
-                        // C?p nh?t ði?m cao nh?t toàn bài
+                        // C?p nh?t ï¿½i?m cao nh?t toï¿½n bï¿½i
                         if (score > maxScore)
                         {
                             maxScore = score;
@@ -185,13 +193,13 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                 }
             }
 
-            // 4. Lýu k?t qu? vào Database
+            // 4. Lï¿½u k?t qu? vï¿½o Database
             if (matches.Any())
             {
-                // Lýu chi ti?t t?ng ðo?n code trùng
+                // Lï¿½u chi ti?t t?ng ï¿½o?n code trï¿½ng
                 _context.MatchResults.AddRange(matches);
 
-                // L?y StudentId c?a bài b? trùng ð? lýu báo cáo
+                // L?y StudentId c?a bï¿½i b? trï¿½ng ï¿½? lï¿½u bï¿½o cï¿½o
                 var student2Id = Guid.Empty;
                 if (bestMatchSubmissionId != Guid.Empty)
                 {
@@ -202,7 +210,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                     student2Id = otherSub;
                 }
 
-                // Lýu báo cáo t?ng quan (DuplicateDetection)
+                // Lï¿½u bï¿½o cï¿½o t?ng quan (DuplicateDetection)
                 var resultDb = new DuplicateDetection
                 {
                     ExamId = submission.ExamId,
@@ -214,7 +222,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                     VectorScore = (decimal)maxScore,
                     IsDuplicate = true,
                     ThresholdUsed = $"Similarity >= {SimilarityThreshold}",
-                    MatchedUnits = JsonSerializer.Serialize(matches.OrderByDescending(m => m.Score).Take(5).Select(m => m.Score)), // Lýu top 5 ði?m
+                    MatchedUnits = JsonSerializer.Serialize(matches.OrderByDescending(m => m.Score).Take(5).Select(m => m.Score)), // Lï¿½u top 5 ï¿½i?m
                     Notes = "Detected by Local Logic (No-Vector DB)",
                     CreatedAt = DateTime.UtcNow
                 };
@@ -239,12 +247,12 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
         }
 
         // =================================================================================================
-        // CÁC HÀM H? TR? (HELPER FUNCTIONS)
+        // Cï¿½C Hï¿½M H? TR? (HELPER FUNCTIONS)
         // =================================================================================================
 
         /// <summary>
-        /// Tính Cosine Similarity gi?a 2 vector.
-        /// Công th?c: (A . B) / (||A|| * ||B||)
+        /// Tï¿½nh Cosine Similarity gi?a 2 vector.
+        /// Cï¿½ng th?c: (A . B) / (||A|| * ||B||)
         /// </summary>
         private double CalculateCosineSimilarity(float[] v1, float[] v2)
         {
@@ -264,24 +272,24 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
 
         /// <summary>
         /// T?o Vector gi? t? n?i dung code.
-        /// Nguyên t?c: Code gi?ng nhau -> Vector gi?ng nhau. Code khác nhau -> Vector khác nhau.
+        /// Nguyï¿½n t?c: Code gi?ng nhau -> Vector gi?ng nhau. Code khï¿½c nhau -> Vector khï¿½c nhau.
         /// </summary>
         private float[] GenerateFakeVector(string content)
         {
             if (string.IsNullOrEmpty(content)) return new float[5];
 
-            // Rút g?n code (b? kho?ng tr?ng th?a) ð? tính chính xác hõn
+            // Rï¿½t g?n code (b? kho?ng tr?ng th?a) ï¿½? tï¿½nh chï¿½nh xï¿½c hï¿½n
             var clean = content.Replace(" ", "").Replace("\r", "").Replace("\n", "");
             float len = clean.Length;
 
-            // T?o vector 5 chi?u d?a trên các ð?c ði?m th?ng kê ðõn gi?n
+            // T?o vector 5 chi?u d?a trï¿½n cï¿½c ï¿½?c ï¿½i?m th?ng kï¿½ ï¿½ï¿½n gi?n
             return new float[]
             {
-                len % 100,                                  // Ð?c trýng 1: Ð? dài
-                clean.Count(c => c == ';') % 20,            // Ð?c trýng 2: S? d?u ch?m ph?y
-                clean.Count(c => c == '{') % 10,            // Ð?c trýng 3: S? kh?i l?nh
-                (float)clean.Select(c => (int)c).Sum() % 500, // Ð?c trýng 4: T?ng m? ASCII
-                clean.Contains("for") || clean.Contains("if") ? 1f : 0f // Ð?c trýng 5: T? khóa
+                len % 100,                                  // ï¿½?c trï¿½ng 1: ï¿½? dï¿½i
+                clean.Count(c => c == ';') % 20,            // ï¿½?c trï¿½ng 2: S? d?u ch?m ph?y
+                clean.Count(c => c == '{') % 10,            // ï¿½?c trï¿½ng 3: S? kh?i l?nh
+                (float)clean.Select(c => (int)c).Sum() % 500, // ï¿½?c trï¿½ng 4: T?ng m? ASCII
+                clean.Contains("for") || clean.Contains("if") ? 1f : 0f // ï¿½?c trï¿½ng 5: T? khï¿½a
             };
         }
 
@@ -289,15 +297,15 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
         {
             _logger.LogDebug("Preparing submission {SubmissionId}", submission.SubmissionId);
 
-            // Ki?m tra Exam (n?u c?n thi?t, b? qua n?u tin tý?ng d? li?u)
+            // Ki?m tra Exam (n?u c?n thi?t, b? qua n?u tin tï¿½?ng d? li?u)
             if (submission.ExamId != Guid.Empty)
             {
-                // 1. Ki?m tra xem ExamId này ð? có trong DB c?a Worker chýa
+                // 1. Ki?m tra xem ExamId nï¿½y ï¿½? cï¿½ trong DB c?a Worker chï¿½a
                 var examExists = await _context.Exams
                     .AnyAsync(e => e.ExamId == submission.ExamId, cancellationToken);
 
-                // 2. N?u chýa có -> T?o m?t Exam "gi?" ð? th?a m?n khóa ngo?i
-                // (V? Worker ch? c?n ID ð? gom nhóm, không quan tâm tên k? thi)
+                // 2. N?u chï¿½a cï¿½ -> T?o m?t Exam "gi?" ï¿½? th?a m?n khï¿½a ngo?i
+                // (V? Worker ch? c?n ID ï¿½? gom nhï¿½m, khï¿½ng quan tï¿½m tï¿½n k? thi)
                 if (!examExists)
                 {
                     var dummyExam = new Exam
@@ -309,13 +317,13 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                     };
 
                     _context.Exams.Add(dummyExam);
-                    await _context.SaveChangesAsync(cancellationToken); // Lýu ngay ð? d?ng dý?i dùng ðý?c
+                    await _context.SaveChangesAsync(cancellationToken); // Lï¿½u ngay ï¿½? d?ng dï¿½?i dï¿½ng ï¿½ï¿½?c
 
                     _logger.LogWarning("Auto-created missing Exam {Id} to prevent FK error.", submission.ExamId);
                 }
             }
 
-            // B? sung thêm: Ki?m tra Examiner (Ngý?i ch?m) týõng t?
+            // B? sung thï¿½m: Ki?m tra Examiner (Ngï¿½?i ch?m) tï¿½ï¿½ng t?
             if (submission.ExaminerId.HasValue && submission.ExaminerId.Value != Guid.Empty)
             {
                 var examinerExists = await _context.Examiners
@@ -351,19 +359,19 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             else
             {
                 existingSubmission.Status = "processing";
-                // Gi? nguyên các thông tin khác
+                // Gi? nguyï¿½n cï¿½c thï¿½ng tin khï¿½c
             }
             await _context.SaveChangesAsync(cancellationToken);
 
-            // Xóa d? li?u rác c? n?u có
-            // ... (Logic này ð? ðý?c x? l? ? ExtractCodeUnitsAsync nên có th? b? qua ? ðây cho g?n)
+            // Xï¿½a d? li?u rï¿½c c? n?u cï¿½
+            // ... (Logic nï¿½y ï¿½? ï¿½ï¿½?c x? l? ? ExtractCodeUnitsAsync nï¿½n cï¿½ th? b? qua ? ï¿½ï¿½y cho g?n)
         }
 
         private List<CodeFile> GetCodeFilesFromProject(string projectPath, Guid submissionId)
         {
             var codeFiles = new List<CodeFile>();
             var allowedExtensions = new[] { ".cs" }; // Ch? l?y file C#
-            var excludeSegments = new[] { "\\bin\\", "\\obj\\", "\\.git\\", "\\Migrations\\" }; // B? thý m?c rác
+            var excludeSegments = new[] { "\\bin\\", "\\obj\\", "\\.git\\", "\\Migrations\\" }; // B? thï¿½ m?c rï¿½c
 
             try
             {
@@ -373,15 +381,15 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
 
                 foreach (var filePath in allFiles)
                 {
-                    // Filter ðuôi file
+                    // Filter ï¿½uï¿½i file
                     var extension = Path.GetExtension(filePath);
                     if (!allowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)) continue;
 
-                    // Filter thý m?c rác
+                    // Filter thï¿½ m?c rï¿½c
                     if (excludeSegments.Any(seg => filePath.Contains(seg, StringComparison.OrdinalIgnoreCase))) continue;
 
                     var fileInfo = new FileInfo(filePath);
-                    if (fileInfo.Length > MaxFileSizeBytes) continue; // B? file quá l?n
+                    if (fileInfo.Length > MaxFileSizeBytes) continue; // B? file quï¿½ l?n
 
                     var relPath = Path.GetRelativePath(projectPath, filePath).Replace('\\', '/');
                     var content = File.ReadAllText(filePath);
@@ -393,7 +401,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
                         RelPath = relPath,
                         Language = "csharp",
                         LineCount = content.Split('\n').Length,
-                        // FileHash: B? qua ho?c dùng MD5 n?u b?ng DB có c?t này (DB m?i ð? xóa byte[])
+                        // FileHash: B? qua ho?c dï¿½ng MD5 n?u b?ng DB cï¿½ c?t nï¿½y (DB m?i ï¿½? xï¿½a byte[])
                         FileSize = fileInfo.Length,
                         CreatedAt = DateTime.UtcNow
                     });
@@ -406,7 +414,7 @@ namespace PRN232_GradingSystem_Worker_Services.Implementations
             return codeFiles;
         }
 
-        // Các hàm Interface th?a (c?a b?n c?) - Ð? tr?ng ð? th?a m?n Interface
+        // Cï¿½c hï¿½m Interface th?a (c?a b?n c?) - ï¿½? tr?ng ï¿½? th?a m?n Interface
         public Task CalculateFingerprintsAsync(Submission submission, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task CalculateSignaturesAsync(Submission submission, CancellationToken cancellationToken) => Task.CompletedTask;
     }

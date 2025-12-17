@@ -15,6 +15,7 @@ namespace PRN232_GradingSystem_Worker_Services.Interfaces
             string? examCode,
             string? studentId,
             string? examinerCode,
+            string? entityName,
             CancellationToken cancellationToken);
     }
 

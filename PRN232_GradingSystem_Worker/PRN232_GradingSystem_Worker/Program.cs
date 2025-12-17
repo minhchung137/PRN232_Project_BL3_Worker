@@ -20,6 +20,7 @@ builder.Services.AddDatabaseServices(builder.Configuration);
 builder.Services.AddFileDownloadServices();
 builder.Services.AddCallbackService(builder.Configuration);
 builder.Services.AddUiTestingServices(builder.Configuration);
+builder.Services.AddApiGradingService();
 builder.Services.AddProcessTrackerService();
 builder.Services.AddGradingPipeline(builder.Configuration);
 

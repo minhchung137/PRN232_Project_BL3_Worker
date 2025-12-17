@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -175,6 +175,7 @@ namespace PRN232_GradingSystem_Worker.Hosted
                                 job.ExamCode,
                                 job.StudentId,
                                 job.ExaminerCode,
+                                job.EntityName,
                                 stoppingToken);
 
                             await SendCallbackAsync(job.SubmissionId, job.ExaminerCode ?? string.Empty, result, stoppingToken);
@@ -481,6 +482,7 @@ namespace PRN232_GradingSystem_Worker.Hosted
             public string? ExamCode { get; set; }
             public string? StudentId { get; set; }
             public string? ExaminerCode { get; set; }
+            public string? EntityName { get; set; } // Entity name for API grading (e.g., "Student", "Product")
         }
     }
 }

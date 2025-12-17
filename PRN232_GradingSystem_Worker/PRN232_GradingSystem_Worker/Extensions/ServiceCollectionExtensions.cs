@@ -190,5 +190,13 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IUITestService, PlaywrightTestService>();
         return services;
     }
+
+    /// Register API grading service
+    public static IServiceCollection AddApiGradingService(
+        this IServiceCollection services)
+    {
+        services.AddScoped<IApiGradingService, ApiGradingService>();
+        return services;
+    }
 }
 
