@@ -536,6 +536,35 @@ namespace PRN232_GradingSystem_Worker.Hosted
             // SubCode = tên endpoint (Create, Update, Delete, GetAll, GetById, Search)
             foreach (var endpointScore in apiGradingResult.EndpointScores)
             {
+                string GetQCode(string function)
+                {
+                    if (string.IsNullOrWhiteSpace(function))
+                        return "Q0"; // fallback nếu không xác định được
+
+                    if (function.Contains("Create", StringComparison.OrdinalIgnoreCase))
+                        return "Q1";
+
+                    if (function.Contains("Update", StringComparison.OrdinalIgnoreCase))
+                        return "Q2";
+
+                    if (function.Contains("Delete", StringComparison.OrdinalIgnoreCase))
+                        return "Q3";
+
+                    if (function.Contains("Get All", StringComparison.OrdinalIgnoreCase) ||
+                        function.Contains("GetAll", StringComparison.OrdinalIgnoreCase))
+                        return "Q4";
+
+                    if (function.Contains("Get by ID", StringComparison.OrdinalIgnoreCase) ||
+                        function.Contains("GetById", StringComparison.OrdinalIgnoreCase))
+                        return "Q5";
+
+                    if (function.Contains("Search", StringComparison.OrdinalIgnoreCase))
+                        return "Q6";
+
+                    // Fallback nếu không match được (có thể log để kiểm tra sau)
+                    _logger.LogWarning("Không xác định được QCode cho function: {Function}", function);
+                    return "Q0";
+                }
                 // Lấy tên endpoint ngắn gọn từ Function
                 // Lưu ý: Function name từ ApiGradingService là "Get by ID (Chi tiết)" (theo tiêu chí hardcode)
                 // Cần check "Get by ID" TRƯỚC "Get All" để tránh match sai
@@ -571,13 +600,14 @@ namespace PRN232_GradingSystem_Worker.Hosted
                     continue;
                 }
 
+                var qCode = GetQCode(endpointScore.Function);
                 var subCode = GetEndpointSubCode(endpointScore.Function ?? string.Empty);
                 var note = BuildNoteFromCriteria(endpointScore);
 
                 request.GradeDetails.Add(new GradeDetailItem
                 {
                     GradeId = 0, // Sẽ được API set khi tạo Grade
-                    QCode = "API", // Dùng "API" để phân biệt với Q1..Q6 cũ
+                    QCode = qCode, // Dùng "API" để phân biệt với Q1..Q6 cũ
                     SubCode = subCode, // Tên endpoint: Create, Update, Delete, GetAll, GetById, Search
                     Point = endpointScore.Score,
                     Note = note
